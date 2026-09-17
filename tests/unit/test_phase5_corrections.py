@@ -36,7 +36,11 @@ def test_drbench2_adapter_parses_official_format(tmp_path: Path) -> None:
                         "analysis": ["compares Y"],
                         "presentation": ["uses table"],
                     },
-                    "blocked": {"title": "Source Article", "authors": ["A"], "urls": ["https://example.com"]},
+                    "blocked": {
+                        "title": "Source Article",
+                        "authors": ["A"],
+                        "urls": ["https://example.com"],
+                    },
                 },
                 "license": "CC BY 4.0",
             }
