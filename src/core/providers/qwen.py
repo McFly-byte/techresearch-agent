@@ -29,7 +29,7 @@ class QwenProvider(BaseLLMProvider):
         model_id: str,
         base_url: str,
         api_key: str,
-        timeout: float = 120.0,
+        timeout: float = 180.0,
         max_retries: int = 1,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -100,9 +100,13 @@ class QwenProvider(BaseLLMProvider):
             try:
                 resp = await client.post(url, json=payload, headers=headers)
             except httpx.TimeoutException as e:
-                # 超时不重试：模型忙/大输入慢，再等一个 120s 只会烧预算；
-                # 调用方（extractor/verifier）会快速回退 heuristic。
-                raise ProviderError(f"Qwen request timed out: {e}") from e
+                # 超时也重试：可能是瞬时 API 慢/限流，退避后重试可能成功。
+                # 最多 max_retries+1 次尝试，每次 180s 超时。
+                last_exc = e
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(2.0 * (attempt + 1))
+                    continue
+                raise ProviderError(f"Qwen request timed out after {max_attempts} attempts: {e}") from e
             except httpx.HTTPError as e:
                 last_exc = e
                 if attempt < max_attempts - 1:

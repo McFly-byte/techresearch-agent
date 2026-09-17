@@ -62,11 +62,13 @@ MAX_FACTS_PER_DOC = 8
 _MAX_SOURCE_CHARS_FOR_LLM = 6000
 
 # Hard total character bound on the messages actually transmitted to the
-# provider (system + user [+ assistant + repair]). 24K chars ~= 6K tokens,
-# well within Qwen's context window and the 120s per-request timeout.
+# provider (system + user [+ assistant + repair]). 16K chars ~= 4K tokens,
+# well within Qwen's context window and the 180s per-request timeout.
 # The previous 120K value caused ProviderError (timeout) on every extractor
 # call because the request body was too large for the API to process in time.
-MAX_TOTAL_INPUT_CHARS = 24_000
+# 24K still timed out on real web pages (Tavily fetches can be large); 16K
+# is the sweet spot that reliably completes in <60s on qwen3.8-flash.
+MAX_TOTAL_INPUT_CHARS = 16_000
 
 
 class ExtractionResult(list):
