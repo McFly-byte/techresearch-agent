@@ -72,28 +72,44 @@ async def answer_full(prompt: EvalPrompt) -> tuple[str, int, int]:
 def make_research_runner_answerer(mode: str = "fake"):
     """Build an async answerer that runs the REAL shipped research system.
 
-    Returns ``async (EvalPrompt) -> (answer, rounds, tokens)``.
+    Returns ``async (EvalPrompt) -> dict`` with keys:
+      answer (str), rounds (int), tokens (int), citations (list[dict]),
+      quality_passed (bool), usage_estimated (bool).
 
     - ``mode="fake"``: fully offline (FakeLLM + canned search/fetch). No keys.
     - ``mode="live"``: real Qwen + Tavily. ResearchRunner fails closed if the
       required keys are missing (it never silently degrades to fake).
 
     ResearchRunner.run() mutates a TaskRecord in place (report_markdown,
-    status, error). We surface a non-completed status as an exception so the
-    runner marks the question failed.
+    status, error). A non-completed status — including a failed report quality
+    gate — is surfaced as an exception so the runner marks the question failed.
     """
 
-    async def _answer(prompt: EvalPrompt) -> tuple[str, int, int]:
+    async def _answer(prompt: EvalPrompt) -> dict[str, Any]:
         store = TaskStore(max_tasks=1)
         rec = store.create(query=prompt.question, user_context="", depth="standard")
+        # Thread the DRB2 source constraints (blocked urls/domains/titles +
+        # as-of cutoff) onto the task record so ResearchRunner passes them to
+        # the worker and the report builder. These are safety rules already in
+        # the prompt, not answer leakage.
+        rec.blocked_urls = list(prompt.blocked_urls)
+        rec.blocked_domains = list(prompt.blocked_domains)
+        rec.blocked_titles = list(prompt.blocked_titles)
+        rec.as_of_date = prompt.as_of_date
         runner = ResearchRunner(store, mode=mode)
         await runner.run(rec)
         if rec.status != "completed":
             raise RuntimeError(rec.error or "research runner did not complete")
         # ResearchRunner does not expose the budget; derive rounds from events.
         rounds = sum(1 for e in rec.events if e.get("stage") == "worker_done")
-        tokens = 0  # per-task usage not surfaced by ResearchRunner today
-        return rec.report_markdown, rounds, tokens
+        return {
+            "answer": rec.report_markdown,
+            "rounds": rounds,
+            "tokens": rec.usage_tokens,
+            "citations": list(rec.citations),
+            "quality_passed": bool(rec.report_quality.get("passed", True)),
+            "usage_estimated": rec.usage_estimated,
+        }
 
     _answer.__name__ = f"answer_research_runner_{mode}"
     return _answer

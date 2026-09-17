@@ -50,6 +50,7 @@ from core.tracing import TracingContext, noop_tracing
 from domain.models import Citation, Fact, SourceDocument, SourceKind
 from graph.state import SubTask
 from service.extractor import ExtractionResult, HeuristicFactExtractor, LLMFactExtractor
+from service.source_filter import SourcePolicy
 from tools.fetchers import FakeFetcher
 from tools.search_providers import FakeSearchProvider
 
@@ -136,6 +137,10 @@ class WorkerNode:
         router: ModelRouter | None = None,
         max_search_retries: int = 2,
         max_iterations: int | None = None,
+        blocked_urls: list[str] | None = None,
+        blocked_domains: list[str] | None = None,
+        blocked_titles: list[str] | None = None,
+        as_of_date: str | None = None,
     ) -> None:
         # Boundary 2: validate the retry cap.
         if (
@@ -146,6 +151,14 @@ class WorkerNode:
             raise ConfigurationError(f"max_search_retries must be >= 0, got {max_search_retries!r}")
         self._web = web_search or FakeSearchProvider()
         self._fetcher = fetcher or FakeFetcher()
+        # Research-time source constraints (DRB2 blocked-source / as-of rules).
+        # Empty policy -> no-op, so existing callers are unaffected.
+        self._policy = SourcePolicy(
+            blocked_urls=list(blocked_urls or []),
+            blocked_domains=list(blocked_domains or []),
+            blocked_titles=list(blocked_titles or []),
+            as_of_date=as_of_date,
+        )
         # Resolve tracing FIRST (before building the extractor) so the
         # LLMFactExtractor receives the SAME noop/real TracingContext the
         # worker itself uses — its LLM calls then emit prompt-tagged LLM runs.
@@ -344,12 +357,32 @@ class WorkerNode:
                 break
             self._tracing.end_span("search", task_id=task_id, n_results=len(hits))
 
+            # --- blocked-source gate (search results) ---
+            # Drop hits whose URL/domain/title matches the DRB2 blocked list
+            # BEFORE we spend a fetch on them. Record how many we dropped so
+            # the run summary can surface it.
+            if not self._policy.is_empty():
+                hits, n_blocked = self._policy.filter_search_hits(hits)
+                if n_blocked:
+                    errors.append(
+                        f"{task_id}:blocked_sources_filtered n={n_blocked} "
+                        f"locator_policy=search"
+                    )
+
             # --- fetch span (interruptible per URL) ---
             self._tracing.start_span("fetch", task_id=task_id, n_results=len(hits))
             docs: list[SourceDocument] = []
             fetch_attempt = 0
             fetch_cancelled = False
             for h in hits:
+                # Defense-in-depth fetch gate: even if a blocked hit slipped past
+                # the search filter, never fetch it and never cite it.
+                if self._policy.is_blocked_url(h.url) or self._policy.is_blocked_title(h.title):
+                    seen_urls.add(h.url)
+                    errors.append(
+                        f"{task_id}:blocked_fetch_skipped locator={sanitize_url(h.url)}"
+                    )
+                    continue
                 if h.url in seen_urls:
                     continue
                 seen_urls.add(h.url)

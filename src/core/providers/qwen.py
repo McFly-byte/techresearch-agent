@@ -29,7 +29,7 @@ class QwenProvider(BaseLLMProvider):
         model_id: str,
         base_url: str,
         api_key: str,
-        timeout: float = 180.0,
+        timeout: float = 300.0,
         max_retries: int = 1,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -67,6 +67,7 @@ class QwenProvider(BaseLLMProvider):
         messages: list[Message],
         *,
         model_id: str | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         if not self.is_configured():
             raise ProviderNotConfiguredError(
@@ -76,10 +77,14 @@ class QwenProvider(BaseLLMProvider):
         # Request-level override: NEVER mutate self.model_id.
         effective_model = model_id or self.model_id
         url = f"{self._base_url}/chat/completions"
-        payload = {
+        payload: dict[str, Any] = {
             "model": effective_model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
         }
+        # 输出 token 预算：judge 批量评分需要足够长度完整返回 JSON，
+        # 否则会因 finish_reason=length 被截断、解析失败。None 时不传，走服务端默认。
+        if max_tokens is not None:
+            payload["max_tokens"] = int(max_tokens)
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",

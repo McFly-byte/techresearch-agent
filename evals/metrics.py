@@ -89,14 +89,21 @@ class _JudgeError(RuntimeError):
 
 
 # 每条 LLM 请求最多打分的 rubric 数量（官方 DRB2 每题约 71 条，分批调用）。
-_BATCH_SIZE = 50
+# batch_size=50 在真实 Qwen 上常因输出过长被截断（finish_reason=length），
+# 导致整批 JSON 不完整、大量 parse_error。降到 12 是经过 pilot 验证的可靠值：
+# 输出长度可控，配合 max_tokens 与解析器容错，parse_error 率可降到 ~0。
+_BATCH_SIZE = 12
 # 每批 LLM 调用超时（秒）。与 QwenProvider 的 120s timeout 对齐：
-# 长答案 + 50 条 rubric 的批次在大模型上可能超过 60s，避免合法调用被误判超时。
+# 长答案 + 12 条 rubric 的批次在大模型上可能超过 60s，避免合法调用被误判超时。
 _BATCH_TIMEOUT = 120.0
 # 三态分值。
 SCORE_PASS = 1
 SCORE_FAIL = 0
 SCORE_BLOCKED = -1
+# 每条 rubric 估算的输出 token 预算；整批 max_tokens = n*PER_RUBRIC_TOKENS + BATCH_TOKENS_FLOOR。
+# 留足 reason 句与 JSON 结构的余量，避免 finish_reason=length 截断。
+_PER_RUBRIC_TOKENS = 300
+_BATCH_TOKENS_FLOOR = 500
 
 
 class LLMRubricJudge:
@@ -109,8 +116,12 @@ class LLMRubricJudge:
       且不计入均值分母。
     - 其余 rubric 按每批最多 :data:`_BATCH_SIZE` 条分组，一次 LLM 请求打一批；
       LLM 返回 JSON 数组，元素为 ``{"index": 1-based, "score": 1|0, "reason": str}``。
-    - 解析失败的 rubric 记 0（reason="parse_error"），单批/单条失败不崩溃。
-    - 每批 :data:`_BATCH_TIMEOUT` 秒超时，最多重试 :attr:`max_retries` 次。
+    - 解析器对常见脏输出有容错：`````json`` 代码块、``{"results":[...]}`` 包装、
+      NDJSON（每行一个对象）、以及被 ``max_tokens`` 截断的不完整数组（扫描出其中
+      完整的对象，损坏的尾对象丢弃）。能解析的项正常评分，不整批记 0。
+    - 整批/单项解析失败的 rubric 记 0（reason="parse_error"）。对整批里缺失的项，
+      单独把该条 rubric 重发一次（最多 1 次，不重发整批），仍失败才落 parse_error。
+    - 每批 :data:`_BATCH_TIMEOUT` 秒超时，批次级最多重试 :attr:`max_retries` 次。
 
     返回 ``(mean_score, per_item, reason)``：
         * ``mean_score`` = sum(非 blocked 的 score) / count(非 blocked)，
@@ -184,11 +195,18 @@ class LLMRubricJudge:
             batch = live[start : start + self._batch_size]
             rubric_texts = [text for _idx, text in batch]
             scored = await self._score_batch(answer, rubric_texts)
+            # 对本批缺失/损坏的项：单独重发该项一次（有界，不重发整批）。
+            for local_pos in range(len(rubric_texts)):
+                if local_pos in scored:
+                    continue
+                single = await self._score_single(answer, rubric_texts[local_pos])
+                if single is not None:
+                    scored[local_pos] = single
             for local_pos, (per_idx, _text) in enumerate(batch):
                 if local_pos in scored:
                     val, why = scored[local_pos]
                 else:
-                    # 整批解析失败 / 缺该 index：按容错规则记 0。
+                    # 整批解析失败 / 缺该 index / 单项重试仍失败：按容错规则记 0。
                     val, why = SCORE_FAIL, "parse_error"
                 per_item[per_idx]["score"] = val
                 per_item[per_idx]["reason"] = why
@@ -210,6 +228,16 @@ class LLMRubricJudge:
 
         返回的 dict 只包含成功解析出的元素；调用方对缺失项按 parse_error 处理。
         """
+        return await self._score_batch_once(answer, rubric_texts)
+
+    async def _score_batch_once(
+        self, answer: str, rubric_texts: list[str], *, attempts: int | None = None
+    ) -> dict[int, tuple[int, str]]:
+        """带重试的批次请求。``attempts`` 为 None 时用 :attr:`max_retries`+1。"""
+        if attempts is None:
+            attempts = self._max_retries + 1
+        # 按批大小估算 max_tokens，避免长输出被服务端截断（finish_reason=length）。
+        max_tokens = len(rubric_texts) * _PER_RUBRIC_TOKENS + _BATCH_TOKENS_FLOOR
         # 带序号格式化 rubric（提示词中使用 1-based 编号）。
         numbered = "\n".join(f"{i + 1}. {r}" for i, r in enumerate(rubric_texts))
         rendered = self._registry.render(
@@ -219,40 +247,160 @@ class LLMRubricJudge:
         for _role, content in rendered.messages:
             messages.append(Message(role="user", content=content))
 
-        for _attempt in range(self._max_retries + 1):
+        for _attempt in range(max(1, attempts)):
             try:
-                resp = await asyncio.wait_for(self._llm.acomplete(messages), timeout=self._timeout)
+                resp = await asyncio.wait_for(
+                    self._llm.acomplete(messages, max_tokens=max_tokens),
+                    timeout=self._timeout,
+                )
             except TimeoutError:
                 continue
             except Exception:  # noqa: BLE001 - 屏蔽供应商错误体
                 continue
             parsed = _parse_batch_judge_json(resp.text)
-            if parsed is not None:
+            if parsed:
                 return parsed
             # 解析失败则进入下一次重试；重试耗尽后落到空 dict。
         return {}
+
+    async def _score_single(
+        self, answer: str, rubric_text: str
+    ) -> tuple[int, str] | None:
+        """把一条解析失败的 rubric 单独重发一次（有界：恰好一次网络请求）。
+
+        用于整批里个别项损坏/缺失时，只重发该项而非重发整批。返回 ``(score, reason)``，
+        仍然失败（无法解析）时返回 None。
+        """
+        out = await self._score_batch_once(answer, [rubric_text], attempts=1)
+        return out.get(0)
+
+
+def _strip_code_fence(text: str) -> str:
+    """剥掉 LLM 常见的 ```json ... ``` 代码块包装，容忍前后多余文字。"""
+    cleaned = (text or "").strip()
+    m = re.search(r"```(?:json|JSON)?\s*(.*?)\s*```", cleaned, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    # 开了 ```json 但没闭合的情况：只剥开头标记。
+    cleaned = re.sub(r"^```(?:json|JSON)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
+
+
+def _unwrap_results(data: object) -> object:
+    """容忍 ``{"results": [...]}`` / ``{"items": [...]}`` 等包装形态。"""
+    if isinstance(data, dict):
+        for key in ("results", "items", "data", "output", "judgements", "scores"):
+            if isinstance(data.get(key), list):
+                return data[key]
+    return data
+
+
+def _scan_array_objects(inner: str) -> list[dict]:
+    """扫描数组内容（``[`` 之后的文本）中完整的顶层 JSON 对象。
+
+    被 ``max_tokens`` 截断时，末尾那个未闭合的对象会被丢弃，其余完整对象照常返回。
+    这样"能解析的项正常评分"，而不是整批记 0。只返回 dict 对象。
+    """
+    objs: list[dict] = []
+    n = len(inner)
+    i = 0
+    while i < n:
+        while i < n and inner[i] in " \t\r\n,":
+            i += 1
+        if i >= n or inner[i] != "{":
+            break
+        start = i
+        depth = 0
+        in_str = False
+        esc = False
+        closed = False
+        while i < n:
+            c = inner[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+            else:
+                if c == '"':
+                    in_str = True
+                elif c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        i += 1
+                        closed = True
+                        break
+            i += 1
+        if not closed:
+            # 末尾对象被截断：丢弃它，停止扫描。
+            break
+        try:
+            obj = json.loads(inner[start:i])
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict):
+            objs.append(obj)
+    return objs
 
 
 def _parse_batch_judge_json(text: str) -> dict[int, tuple[int, str]] | None:
     """从批量评分响应中解析 ``{批内0基下标: (score, reason)}``。
 
-    整个响应无法解析为 JSON 数组时返回 None；单个元素非法时跳过该元素
+    容错顺序：
+    1. 整段直接 JSON 解析（数组，或 ``{"results":[...]}`` 包装）。
+    2. NDJSON：每行一个 JSON 对象。
+    3. 截断恢复：从第一个 ``[`` 起扫描其中完整的对象，丢弃损坏尾对象。
+
+    整段都无法提取任何对象时返回 None；单个元素非法时跳过该元素
     （调用方会把它当 parse_error）。index 按提示词约定为 1-based，这里转成 0-based。
     """
-    cleaned = (text or "").strip()
-    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-    cleaned = re.sub(r"\s*```$", "", cleaned)
+    cleaned = _strip_code_fence(text)
+    items: list[dict] | None = None
+
+    # 1) 整段 JSON。
     try:
-        data = json.loads(cleaned)
+        data: object = json.loads(cleaned)
     except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(data, list):
+        data = None
+    if isinstance(data, dict):
+        data = _unwrap_results(data)
+    if isinstance(data, list):
+        items = [el for el in data if isinstance(el, dict)]
+
+    # 2) NDJSON：每行一个对象。
+    if items is None:
+        nd: list[dict] = []
+        for line in cleaned.splitlines():
+            line = line.strip().rstrip(",").strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(obj, dict):
+                nd.append(obj)
+        if nd:
+            items = nd
+
+    # 3) 截断恢复：扫描不完整数组里的完整对象。
+    if items is None:
+        lb = cleaned.find("[")
+        if lb != -1:
+            recovered = _scan_array_objects(cleaned[lb + 1:])
+            if recovered:
+                items = recovered
+
+    if items is None:
         return None
 
     out: dict[int, tuple[int, str]] = {}
-    for el in data:
-        if not isinstance(el, dict):
-            continue
+    for el in items:
         raw_index = el.get("index")
         if isinstance(raw_index, bool) or not isinstance(raw_index, int):
             continue

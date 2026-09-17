@@ -34,6 +34,7 @@ class FakeLLM(BaseLLMProvider):
         messages: list[Message],
         *,
         model_id: str | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         # Request-level override (stage-3 hard boundary): use the per-request
         # model when supplied, else the provider default. NEVER mutate
@@ -64,6 +65,7 @@ class FakeLLMThatFails(FakeLLM):
         messages: list[Message],
         *,
         model_id: str | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         raise ProviderNotConfiguredError("fake failure injected for tests")
 

@@ -43,9 +43,10 @@ class _MockBatchLLM:
         # 记录每次 LLM 请求里评了几条 rubric（用于断言分批）。
         self.requests: list[int] = []
 
-    async def acomplete(self, messages, *, model_id=None):  # type: ignore[no-untyped-def]
+    async def acomplete(self, messages, *, model_id=None, max_tokens=None):  # type: ignore[no-untyped-def]
         from core.providers.base import LLMResponse
 
+        self.max_tokens_seen = max_tokens
         user = messages[-1].content
         n = sum(
             1
@@ -67,10 +68,40 @@ class _BrokenBatchLLM:
     model_id = "broken-1"
     requests: list[int] = []
 
-    async def acomplete(self, messages, *, model_id=None):  # type: ignore[no-untyped-def]
+    async def acomplete(self, messages, *, model_id=None, max_tokens=None):  # type: ignore[no-untyped-def]
         from core.providers.base import LLMResponse
 
         return LLMResponse(text="not json at all", model="broken-1", provider="broken")
+
+
+class _ScriptedBatchLLM:
+    """按请求顺序返回预设响应文本，离线、确定性；记录 max_tokens 与请求条数。
+
+    用于测试解析器容错（包装/NDJSON/截断）与单项重试的有界性。
+    """
+
+    model_id = "scripted-1"
+
+    def __init__(self, responses: list[str]) -> None:
+        self._responses = list(responses)
+        self._pos = 0
+        self.requests: list[int] = []
+        self.max_tokens_calls: list[object] = []
+
+    async def acomplete(self, messages, *, model_id=None, max_tokens=None):  # type: ignore[no-untyped-def]
+        from core.providers.base import LLMResponse
+
+        self.max_tokens_calls.append(max_tokens)
+        user = messages[-1].content
+        n = sum(
+            1
+            for line in user.splitlines()
+            if line.strip() and line.strip()[0].isdigit() and ". " in line
+        )
+        self.requests.append(n)
+        text = self._responses[self._pos] if self._pos < len(self._responses) else "not json"
+        self._pos += 1
+        return LLMResponse(text=text, model="scripted-1", provider="scripted")
 
 
 # --- 任务1: 三态批量评分 ----------------------------------------------------
@@ -155,6 +186,104 @@ async def test_batch_judge_parse_failure_scores_zero_no_crash():
     assert "0/2" in reason
 
 
+@pytest.mark.asyncio
+async def test_batch_judge_default_batch_size_is_twelve():
+    # 30 条 rubric，默认 batch_size=12 -> 三次请求（12 + 12 + 6）。
+    llm = _MockBatchLLM([1] * 30)
+    judge = LLMRubricJudge(llm=llm, max_retries=0)
+    score, per_item, _ = await judge.score("ans", [f"r{i}" for i in range(30)])
+    assert llm.requests == [12, 12, 6]
+    assert len(per_item) == 30
+    assert score == 1.0
+
+
+@pytest.mark.asyncio
+async def test_batch_judge_parses_results_wrapper():
+    # {"results": [...]} 包装形态。
+    wrapped = json.dumps(
+        {
+            "results": [
+                {"index": 1, "score": 1, "reason": "a"},
+                {"index": 2, "score": 0, "reason": "b"},
+                {"index": 3, "score": 1, "reason": "c"},
+            ]
+        }
+    )
+    llm = _ScriptedBatchLLM([wrapped, "not json", "not json"])
+    judge = LLMRubricJudge(llm=llm, max_retries=0)
+    score, per_item, _ = await judge.score("ans", ["r1", "r2", "r3"])
+    assert [p["score"] for p in per_item] == [1, 0, 1]
+    assert score == pytest.approx(2 / 3)
+
+
+@pytest.mark.asyncio
+async def test_batch_judge_parses_code_fence_and_ndjson():
+    fenced = "```json\n" + json.dumps(
+        [
+            {"index": 1, "score": 1, "reason": "a"},
+            {"index": 2, "score": 0, "reason": "b"},
+        ]
+    ) + "\n```"
+    ndjson = (
+        json.dumps({"index": 1, "score": 1, "reason": "x"}) + "\n"
+        + json.dumps({"index": 2, "score": 1, "reason": "y"})
+    )
+    # 第一批代码块包装，第二批 NDJSON（batch_size=2 -> 2 批）。
+    llm = _ScriptedBatchLLM([fenced, ndjson])
+    judge = LLMRubricJudge(llm=llm, max_retries=0, batch_size=2)
+    score, per_item, _ = await judge.score("ans", ["r1", "r2", "r3", "r4"])
+    assert llm.requests == [2, 2]
+    assert [p["score"] for p in per_item] == [1, 0, 1, 1]
+    assert score == pytest.approx(3 / 4)
+
+
+@pytest.mark.asyncio
+async def test_batch_judge_partial_truncation_does_not_zero_whole_batch():
+    # 输出被 max_tokens 截断：只完整返回前 3 条，第 4 条写到一半。
+    truncated = (
+        '[{"index":1,"score":1,"reason":"r1 ok"},'
+        '{"index":2,"score":0,"reason":"r2 miss"},'
+        '{"index":3,"score":1,"reason":"r3 ok"},'
+        '{"index":4,"score":0,"rea'
+    )
+    # 单项重试（第 4、5 条）各返回一条合法 JSON。
+    retry_4 = json.dumps([{"index": 1, "score": 1, "reason": "r4 retry"}])
+    retry_5 = json.dumps([{"index": 1, "score": 1, "reason": "r5 retry"}])
+    llm = _ScriptedBatchLLM([truncated, retry_4, retry_5])
+    judge = LLMRubricJudge(llm=llm, max_retries=0)
+    score, per_item, _ = await judge.score("ans", [f"r{i}" for i in range(5)])
+    # 前 3 条来自截断批次本身（reason 是原文），证明整批没被记 0。
+    assert per_item[0]["reason"] == "r1 ok"
+    assert per_item[1]["reason"] == "r2 miss"
+    assert per_item[2]["reason"] == "r3 ok"
+    # 第 4、5 条通过单项重试恢复。
+    assert [p["score"] for p in per_item] == [1, 0, 1, 1, 1]
+    assert score == pytest.approx(4 / 5)
+    # 1 次整批 + 2 次单项重试。
+    assert llm.requests == [5, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_batch_judge_single_item_retry_is_bounded():
+    # 整批永远失败：1 次整批 + 每个缺失项各 1 次单项重试 = 1 + 5 = 6 次请求，不无限重试。
+    llm = _ScriptedBatchLLM(["not json"] * 10)
+    judge = LLMRubricJudge(llm=llm, max_retries=0, timeout=1.0)
+    score, per_item, reason = await judge.score("ans", [f"r{i}" for i in range(5)])
+    assert [p["score"] for p in per_item] == [0] * 5
+    assert all(p["reason"] == "parse_error" for p in per_item)
+    assert score == 0.0
+    assert llm.requests == [5, 1, 1, 1, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_batch_judge_passes_max_tokens_to_provider():
+    llm = _MockBatchLLM([1, 0, 1])
+    judge = LLMRubricJudge(llm=llm, max_retries=0)
+    await judge.score("ans", ["r1", "r2", "r3"])
+    # 3 条 rubric -> max_tokens = 3*300 + 500 = 1400。
+    assert getattr(llm, "max_tokens_seen", None) == 1400
+
+
 # --- P0-4: answerer isolation ----------------------------------------------
 def test_eval_prompt_has_no_reference_fields():
     p = EvalPrompt(qid="q1", question="what?")
@@ -166,13 +295,21 @@ def test_eval_prompt_has_no_reference_fields():
 @pytest.mark.asyncio
 async def test_research_runner_answerer_fake_mode():
     answerer = make_research_runner_answerer(mode="fake")
-    answer, rounds, tokens = await answerer(
-        EvalPrompt(qid="t1", question="Tell me about LangGraph.")
-    )
-    assert isinstance(answer, str)
-    assert len(answer) > 0
-    assert isinstance(rounds, int)
-    assert isinstance(tokens, int)
+    out = await answerer(EvalPrompt(qid="t1", question="Tell me about LangGraph."))
+    # Production answerer now returns the rich dict (citations/usage/quality).
+    assert isinstance(out, dict)
+    assert isinstance(out["answer"], str) and len(out["answer"]) > 0
+    assert isinstance(out["rounds"], int)
+    assert isinstance(out["tokens"], int)
+    assert isinstance(out["citations"], list)
+    # Fake mode: no LLM synthesis, so no quality gate was run -> passed=True.
+    assert out["quality_passed"] is True
+    # Fake mode uses char-derived estimates.
+    assert out["usage_estimated"] is True
+    # Production answerer now exposes real provenance + usage to the eval.
+    assert len(out["citations"]) > 0
+    assert all("url" in c for c in out["citations"])
+    assert out["tokens"] > 0
 
 
 # --- P1-3: resume retries failed questions ---------------------------------
@@ -286,7 +423,7 @@ def test_cli_run_smoke_slice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     assert summary["n"] == 3
 
 
-# --- 任务2: LangSmith Experiment 集成（mock client，不联网） -----------------
+# --- LangSmith Experiment 集成（mock client，不联网） -----------------------
 class _FakeDS:
     def __init__(self, name, id_):
         self.name = name
@@ -300,41 +437,26 @@ class _FakeExample:
 
 
 class _FakeLangSmithClient:
-    """记录所有调用的 LangSmith client mock。"""
+    """Minimal mock for the new aevaluate-based sink construction."""
 
     def __init__(self, dataset_name="DeepResearch Bench II official-2b29012d0842"):
         self._dataset_name = dataset_name
-        self.projects = []
-        self.runs = []
-        self.feedbacks = []
 
     def list_datasets(self, *, dataset_name=None, limit=None):
         return [_FakeDS(self._dataset_name, "ds-123")]
 
-    def list_examples(self, *, dataset_id=None):
+    def list_examples(self, *, dataset_id=None, limit=None):
         return [
-            _FakeExample("ex-1", {"qid": "fx-001", "prompt": "What is LangGraph's primary abstraction?"}),
+            _FakeExample("ex-1", {"qid": "fx-001", "prompt": "What is LangGraph?"}),
             _FakeExample("ex-2", {"qid": "fx-002", "prompt": "Does LlamaIndex focus on retrieval?"}),
         ]
-
-    def create_project(self, *, project_name, reference_dataset_id=None, metadata=None):
-        self.projects.append(
-            {"name": project_name, "dataset_id": reference_dataset_id, "metadata": metadata}
-        )
-        return object()
-
-    def create_run(self, **kwargs):
-        self.runs.append(kwargs)
-
-    def create_feedback(self, **kwargs):
-        self.feedbacks.append(kwargs)
 
 
 def _make_sink(client):
     from evals.runner import LangSmithExperimentSink
 
     return LangSmithExperimentSink(
-        experiment_name="drb2-pilot-live-qwen-20260101T000000Z",
+        experiment_prefix="drb2-pilot-v2",
         dataset_name="DeepResearch Bench II official-2b29012d0842",
         dataset_hash="2b29012d0842",
         judge_model="qwen-mock",
@@ -345,79 +467,21 @@ def _make_sink(client):
     )
 
 
-def test_experiment_sink_creates_project_and_matches_example():
+def test_experiment_sink_construction_links_dataset():
+    """New aevaluate-based sink: construction resolves dataset + qid->example map."""
     client = _FakeLangSmithClient()
     sink = _make_sink(client)
     assert sink.enabled is True
-    # create_project 关联到 dataset。
-    assert len(client.projects) == 1
-    assert client.projects[0]["dataset_id"] == "ds-123"
-    meta = client.projects[0]["metadata"]
-    assert meta["judge"] == "qwen-nonofficial"
-    assert meta["official_judge"] == "not_run (requires GPT-5.5)"
-    assert meta["git_commit"] == "abc1234"
-    assert meta["prompt_commits"] == {"eval_rubric_judge_system": "78595230"}
-
-    # 上传一题：qid 匹配到 example ex-1。
-    sink.log_result(
-        qid="fx-001",
-        question="What is LangGraph's primary abstraction?",
-        answer="a" * 9000,
-        status="completed",
-        score=0.8,
-        latency_s=1.5,
-        tokens=100,
-        judge_detail=[{"rubric": "r", "score": 1, "reason": "ok", "dimension": "info_recall"}],
-        judge_reason="1/1 passed",
-    )
-    assert len(client.runs) == 1
-    run = client.runs[0]
-    assert run["reference_example_id"] == "ex-1"
-    assert run["inputs"] == {"prompt": "What is LangGraph's primary abstraction?"}
-    # answer 截断到 8000。
-    assert len(run["outputs"]["answer"]) == 8000
-    assert run["extra"]["metadata"]["judge_model"] == "qwen-mock"
-    assert len(client.feedbacks) == 1
-    fb = client.feedbacks[0]
-    assert fb["key"] == "judge_score"
-    assert fb["score"] == 0.8
-    assert fb["value"]["status"] == "completed"
+    assert sink._dataset_id == "ds-123"
+    assert "fx-001" in sink._example_by_qid
+    assert "fx-002" in sink._example_by_qid
 
 
-def test_experiment_sink_upload_failure_does_not_raise():
-    class _BoomClient(_FakeLangSmithClient):
-        def create_run(self, **kwargs):
-            raise RuntimeError("network down")
+def test_experiment_sink_disabled_when_dataset_missing():
+    """Sink self-disables when dataset not found (no exception raised)."""
+    class _EmptyClient(_FakeLangSmithClient):
+        def list_datasets(self, *, dataset_name=None, limit=None):
+            return []
 
-    sink = _make_sink(_BoomClient())
-    # 不抛异常，只吞掉。
-    sink.log_result(
-        qid="fx-001", question="q", answer="a", status="completed",
-        score=0.5, latency_s=0.1, tokens=0, judge_detail=[], judge_reason="",
-    )
-
-
-def test_runner_integrates_experiment_sink(tmp_path: Path):
-    client = _FakeLangSmithClient()
-    sink = _make_sink(client)
-    ds = FixtureDataset()
-
-    def answerer(prompt):  # type: ignore[no-untyped-def]
-        return f"answer for {prompt.qid}", 1, 10
-
-    out = tmp_path / "run"
-    runner = EvalRunner(
-        out_dir=out,
-        config=CONFIGS["full"],
-        questions=ds.questions(),
-        answerer=answerer,
-        experiment_sink=sink,
-    )
-    runner.run_sync(max_questions=2)
-    # 每题一次 create_run + create_feedback。
-    assert len(client.runs) == 2
-    assert len(client.feedbacks) == 2
-    # fx-001 命中 example，fx-002 也命中（mock 里有）。
-    refs = {r["name"]: r["reference_example_id"] for r in client.runs}
-    assert refs["fx-001"] == "ex-1"
-    assert refs["fx-002"] == "ex-2"
+    sink = _make_sink(_EmptyClient())
+    assert sink.enabled is False

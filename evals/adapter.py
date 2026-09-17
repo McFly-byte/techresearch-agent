@@ -19,21 +19,34 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
 class EvalPrompt:
     """The ONLY object a research answerer may see.
 
-    Deliberately narrow: just ``qid`` + ``question``. No reference answer, no
-    rubrics — anything more would leak the gold label to the system under test.
+    Deliberately narrow: ``qid`` + ``question`` plus the research-time source
+    constraints (``blocked_*`` / ``as_of_date``). These are NOT gold-label
+    leakage: they are safety rules that already live verbatim in the prompt's
+    ``**important**`` block. The answerer needs them to actually enforce the
+    benchmark's "do not view this article" / "as-of year" rules; the judge still
+    never reads them.
     """
 
     qid: str
     question: str
+    # Sources the research system must never fetch/cite. From content.blocked
+    # (and double-confirmed from the prompt's **important** block).
+    blocked_urls: list[str] = field(default_factory=list)
+    blocked_domains: list[str] = field(default_factory=list)
+    blocked_titles: list[str] = field(default_factory=list)
+    # Cutoff year (e.g. "2021"). Material dated after this year is dropped.
+    as_of_date: str | None = None
 
 
 @dataclass
@@ -56,6 +69,13 @@ class EvalQuestion:
     # 官方 DRB2 口径：content.blocked 是被屏蔽/不适用的 rubric 文本列表。
     # 评分器会把命中这些文本的 rubric 直接记 -1，不调用 LLM、不计入均值。
     blocked_rubrics: list[str] = field(default_factory=list)
+    # Resolved source constraints for the RESEARCH system (not the judge).
+    # Parsed from content.blocked urls + the prompt **important** block.
+    # The EvalRunner copies these onto the EvalPrompt handed to the answerer.
+    blocked_urls: list[str] = field(default_factory=list)
+    blocked_domains: list[str] = field(default_factory=list)
+    blocked_titles: list[str] = field(default_factory=list)
+    as_of_date: str | None = None
     # Metadata from official dataset.
     language: str = ""  # "zh" / "en"
     theme: str = ""
@@ -71,6 +91,9 @@ class EvalResult:
     citations: list[str] = field(default_factory=list)
     n_search_rounds: int = 0
     tokens_estimated: int = 0
+    # True when tokens_estimated is a character-derived estimate (fake /
+    # heuristic), False when the provider reported real API usage.
+    usage_estimated: bool = True
     latency_s: float = 0.0
     error: str = ""
     # Per-config metrics get computed downstream.
@@ -128,6 +151,83 @@ def sha256_file(path: Path, *, chunk: int = 1 << 20) -> str:
                 break
             h.update(block)
     return h.hexdigest()
+
+
+# --- Source-constraint parsing (blocked urls / as-of year) -------------------
+# These rules are not judge signals; they are research-time safety constraints
+# that already appear verbatim in the prompt (the **important** block + the
+# as-of sentence). We parse them so the research pipeline can enforce them.
+
+#: Years we treat as plausible publication years when scanning citation text.
+_YEAR_RE = re.compile(r"(19[89]\d|20[0-4]\d)")
+
+#: as-of / cutoff date phrasings seen in DRB2 prompts. Order matters: try the
+#: most specific (year-end) phrasings first so we never grab the wrong year.
+_AS_OF_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"截至\s*(\d{4})\s*年"),
+    re.compile(r"截止\s*到\s*(\d{4})\s*年底"),
+    re.compile(r"截止\s*到\s*(\d{4})\s*年"),
+    re.compile(r"截止\s*(\d{4})\s*年底"),
+    re.compile(r"as of\s+(\d{4})", re.IGNORECASE),
+    re.compile(r"through\s+(\d{4})", re.IGNORECASE),
+)
+
+#: URLs embedded in the prompt's "not allowed to view" block.
+_PROMPT_URL_RE = re.compile(r"https?://[^\s'\"<>\]\)}>，。；]+", re.IGNORECASE)
+_BLOCKED_PHRASE_RE = re.compile(r"not allowed to view", re.IGNORECASE)
+
+
+def _normalize_domain(url: str) -> str:
+    """Extract a lowercase, portless, www-stripped domain from a URL.
+
+    ``www.mdpi.com`` -> ``mdpi.com``; ``ideas.repec.org`` stays as-is;
+    ``pubmed.ncbi.nlm.nih.gov`` stays as-is. Returns "" on parse failure.
+    """
+    try:
+        netloc = urlparse(url).netloc.lower()
+    except Exception:  # noqa: BLE001 - never crash the adapter on a weird URL
+        return ""
+    if not netloc:
+        return ""
+    if ":" in netloc:
+        netloc = netloc.split(":", 1)[0]
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    return netloc
+
+
+def _parse_blocked_urls_from_prompt(prompt: str) -> list[str]:
+    """Pull the forbidden article URLs out of the prompt's **important** block.
+
+    The official prompt appends a sentence like "you are not allowed to view
+    the following article and urls: {...}". We locate that phrase and harvest
+    every http(s) URL in the remainder. This is a double-check on
+    ``content.blocked`` — same URLs, different source.
+    """
+    m = _BLOCKED_PHRASE_RE.search(prompt)
+    if not m:
+        return []
+    tail = prompt[m.start():]
+    return [u.rstrip(".,;，。；") for u in _PROMPT_URL_RE.findall(tail)]
+
+
+def _parse_as_of_date(prompt: str) -> str | None:
+    """Extract the cutoff year from a DRB2 prompt, e.g. "截至2021年" -> "2021"."""
+    for pat in _AS_OF_PATTERNS:
+        m = pat.search(prompt)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _dedupe(seq: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in seq:
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
 
 
 class DeepResearchBench2Adapter:
@@ -217,6 +317,29 @@ class DeepResearchBench2Adapter:
                     blocked_rubrics = [str(x) for x in blocked_raw if str(x).strip()]
                 elif isinstance(blocked_raw, dict):
                     blocked_refs = blocked_raw
+
+                # --- Research-time source constraints (NOT judge leakage) ----
+                # 1) Exact blocked URLs: from content.blocked.urls.
+                c_blocked_urls: list[str] = []
+                urls_field = blocked_refs.get("urls")
+                if isinstance(urls_field, list):
+                    c_blocked_urls = [str(u) for u in urls_field if str(u).strip()]
+                # 2) Double protection: also harvest URLs from the prompt's
+                #    "not allowed to view" block (same URLs, redundant source).
+                prompt_blocked_urls = _parse_blocked_urls_from_prompt(task)
+                blocked_urls = _dedupe(c_blocked_urls + prompt_blocked_urls)
+                # 3) Domains: normalized netloc of every blocked URL.
+                blocked_domains = _dedupe(
+                    [d for d in (_normalize_domain(u) for u in blocked_urls) if d]
+                )
+                # 4) Blocked titles (substring match on search/citation titles).
+                blocked_titles: list[str] = []
+                title_field = blocked_refs.get("title")
+                if isinstance(title_field, str) and title_field.strip():
+                    blocked_titles = [title_field.strip()]
+                # 5) As-of cutoff year parsed from the prompt body.
+                as_of_date = _parse_as_of_date(task)
+
                 # qid: stable per-row id. Prefer upstream "id", else row ordinal.
                 upstream_id = obj.get("id") or obj.get("qid")
                 qid = str(upstream_id) if upstream_id else f"drb2-{i:04d}"
@@ -231,6 +354,10 @@ class DeepResearchBench2Adapter:
                         rubrics_by_dimension=rubrics_by_dim,
                         blocked=blocked_refs,
                         blocked_rubrics=blocked_rubrics,
+                        blocked_urls=blocked_urls,
+                        blocked_domains=blocked_domains,
+                        blocked_titles=blocked_titles,
+                        as_of_date=as_of_date,
                         language=str(obj.get("language", "")),
                         theme=str(obj.get("theme", "")),
                         license=str(obj.get("license", "")),
@@ -245,5 +372,9 @@ __all__ = [
     "EvalQuestion",
     "EvalResult",
     "FixtureDataset",
+    "_dedupe",
+    "_normalize_domain",
+    "_parse_as_of_date",
+    "_parse_blocked_urls_from_prompt",
     "sha256_file",
 ]

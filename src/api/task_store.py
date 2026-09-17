@@ -35,6 +35,23 @@ class TaskRecord:
     report_markdown: str = ""
     report_html: str = ""
     error: str = ""
+    # Research-time source constraints (from EvalPrompt). Empty by default so
+    # interactive / non-eval tasks are unaffected. The worker + report builder
+    # consult these to drop blocked sources and post-cutoff material.
+    blocked_urls: list[str] = field(default_factory=list)
+    blocked_domains: list[str] = field(default_factory=list)
+    blocked_titles: list[str] = field(default_factory=list)
+    as_of_date: str | None = None
+    # Exposed to the eval harness: real citations the report relied on and the
+    # token usage of the run. ``usage_estimated`` is True when the counts are
+    # character-derived estimates (fake / heuristic), False when the provider
+    # reported real usage from the API.
+    citations: list[dict[str, Any]] = field(default_factory=list)
+    usage_tokens: int = 0
+    usage_estimated: bool = True
+    # Quality-gate result of the LLM-synthesized report (see
+    # service.verified_report.check_report_quality). Empty in template/fake mode.
+    report_quality: dict[str, Any] = field(default_factory=dict)
     # Per-task asyncio handle so cancel can request stop.
     _cancel_requested: bool = False
 
@@ -50,6 +67,9 @@ class TaskRecord:
             "updated_at": self.updated_at,
             "n_events": len(self.events),
             "error": self.error,
+            "n_citations": len(self.citations),
+            "usage_tokens": self.usage_tokens,
+            "usage_estimated": self.usage_estimated,
         }
 
 

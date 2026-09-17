@@ -259,6 +259,10 @@ class ResearchRunner:
                 llm_provider=kit.llm,
                 tracing=self._tracing,
                 router=router,
+                blocked_urls=rec.blocked_urls,
+                blocked_domains=rec.blocked_domains,
+                blocked_titles=rec.blocked_titles,
+                as_of_date=rec.as_of_date,
             )
             graph = build_graph(
                 worker=worker, budget=budget, max_workers=self._settings.max_workers
@@ -338,7 +342,18 @@ class ResearchRunner:
                 verifier = CitationVerifier(fetcher=kit.fetcher, nli=nli)
             else:
                 verifier = CitationVerifier(fetcher=kit.fetcher)
-            builder = VerifiedReportBuilder(verifier=verifier)
+            builder = VerifiedReportBuilder(
+                verifier=verifier,
+                blocked_urls=rec.blocked_urls,
+                blocked_domains=rec.blocked_domains,
+                blocked_titles=rec.blocked_titles,
+                as_of_date=rec.as_of_date,
+                # Live mode synthesizes the report with the real LLM (quality
+                # gated). Fake mode passes None -> deterministic template,
+                # zero network, hermetic for offline tests.
+                llm_provider=kit.llm if kit.mode == "live" else None,
+                tracing=self._tracing,
+            )
             write_exc: BaseException | None = None
             try:
                 report = await builder.build(
@@ -359,6 +374,42 @@ class ResearchRunner:
 
             self._emit(rec, stage="verify_done", data={})
             self._emit(rec, stage="write_done", data={"len": len(report.markdown)})
+
+            # Expose real provenance + usage to the eval harness. Citations are
+            # the post-source-policy list (blocked / post-cutoff already gone).
+            rec.citations = [
+                {
+                    "citation_id": c.citation_id,
+                    "title": c.title,
+                    "url": c.locator,
+                    "source_date": c.fetched_at,
+                }
+                for c in report.citations
+            ]
+            rec.usage_tokens = budget.tokens_used()
+            synth_usage = builder.last_synthesis_usage
+            rec.usage_estimated = True
+            if synth_usage is not None:
+                rec.usage_estimated = bool(getattr(synth_usage, "usage_estimated", True))
+            rec.report_quality = dict(report.synthesis_quality)
+
+            # Quality gate: an LLM-synthesized report must be non-empty, not a
+            # prompt echo, and carry traceable [cN] tags. Empty
+            # synthesis_quality means template (fake) mode -> no gate.
+            quality = report.synthesis_quality
+            if quality and not quality.get("passed", True):
+                rec.status = "failed"
+                rec.error = quality.get("failure_reason") or "report quality gate failed"
+                self._emit(
+                    rec,
+                    event_type="error",
+                    stage="failed",
+                    data={
+                        "message": rec.error,
+                        "quality": quality,
+                    },
+                )
+                return
 
             rec.report_markdown = report.markdown
             rec.report_html = report.html

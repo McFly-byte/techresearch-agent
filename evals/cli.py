@@ -95,12 +95,12 @@ def main() -> None:
 @click.option(
     "--experiment/--no-experiment",
     default=True,
-    help="完成每题后上传到 LangSmith Experiment（默认开启；live 模式才生效）。",
+    help="完成每题后上传到 LangSmith Experiment（默认开启；需指定 --dataset）。",
 )
 @click.option(
     "--experiment-name",
     default=None,
-    help="可选：自定义 LangSmith Experiment 名称。默认按 full/pilot + 时间戳生成。",
+    help="可选：自定义 LangSmith Experiment 名前缀。默认按 full/pilot-v2 + 时间戳生成。",
 )
 def run(
     dataset: Path | None,
@@ -174,28 +174,32 @@ def run(
     model = provider_model.split("/", 1)[1] if "/" in provider_model else "unknown"
 
     # --- Optional: LangSmith Experiment 上传 --------------------------------
-    # 仅在 live 模式且指向真实 DRB2 数据集时启用；fake 冒烟保持离线。
+    # 用官方 aevaluate 驱动：指定 --dataset 即启用。live = 真实 Qwen+Tavily；
+    # fake = 离线 answerer/judge，用于不烧钱地验证 experiment 管线。
     experiment_sink = None
-    if experiment and mode == "live" and dataset is not None:
+    if experiment and dataset is not None:
         ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         if experiment_name:
-            exp_name = experiment_name
+            exp_prefix = experiment_name
         elif confirm_full and limit >= n_total:
-            exp_name = f"drb2-full-live-qwen-{ts}"
+            # v2 名：与旧坏结果隔离，不覆盖。
+            exp_prefix = f"drb2-full-live-qwen-v2-{ts}"
         else:
-            exp_name = f"drb2-pilot-live-qwen-{ts}"
+            exp_prefix = f"drb2-pilot-live-qwen-v2-{ts}"
         experiment_sink = LangSmithExperimentSink(
-            experiment_name=exp_name,
+            experiment_prefix=exp_prefix,
             dataset_name=LANGSMITH_DATASET_NAME,
             dataset_hash=dataset_hash,
+            provider=provider,
+            model=model,
             judge_model=model,
             prompt_commits=_prompt_commits(),
             git_commit=_git_commit(),
-            research_mode="live",
+            research_mode=mode,
         )
         click.echo(
             f"experiment: {'enabled' if experiment_sink.enabled else 'disabled'} "
-            f"(name={exp_name})"
+            f"(prefix={exp_prefix})"
         )
 
     runner = EvalRunner(
@@ -207,14 +211,29 @@ def run(
         dataset_hash=dataset_hash,
         provider=provider,
         model=model,
-        experiment_sink=experiment_sink,
+        experiment_sink=None,  # experiment 模式走 sink.arun_experiment，不走内嵌钩子
     )
 
     click.echo(
         f"eval run: dataset={config_name} n={n_total} limit={limit} mode={mode} "
         f"judge={judge_kind_resolved} out={out}"
     )
-    results = runner.run_sync(max_questions=limit)
+    import asyncio
+
+    if experiment_sink is not None and experiment_sink.enabled:
+        # 官方 aevaluate 驱动整个实验（含 resume/写 summary）。
+        results = asyncio.run(
+            experiment_sink.arun_experiment(
+                runner=runner,
+                questions=questions,
+                limit=limit,
+                start_time=datetime.now(UTC).timestamp(),
+            )
+        )
+        if getattr(experiment_sink, "experiment_name", ""):
+            click.echo(f"experiment_name: {experiment_sink.experiment_name}")
+    else:
+        results = runner.run_sync(max_questions=limit)
 
     completed = sum(1 for r in results if r.get("status") == "completed")
     failed = sum(1 for r in results if r.get("status") == "failed")

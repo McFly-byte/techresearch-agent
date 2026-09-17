@@ -52,6 +52,7 @@ class BaseLLMProvider(abc.ABC):
         messages: list[Message],
         *,
         model_id: str | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Async chat completion.
 
@@ -61,6 +62,10 @@ class BaseLLMProvider(abc.ABC):
         Implementations MUST use ``model_id or self.model_id`` and must never
         persist the override onto ``self.model_id``. ``None`` means "use the
         provider default".
+
+        ``max_tokens`` is an optional output-token budget. ``None`` means "use
+        the provider/default". Providers that do not support it MUST ignore it
+        (existing callers are unaffected).
         """
 
     @abc.abstractmethod

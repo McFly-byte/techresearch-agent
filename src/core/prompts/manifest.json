@@ -88,6 +88,28 @@
           "template": "Numbered rubric items to grade:\n{rubrics_batch}\n\nCandidate answer:\n{answer}\n\nGrade EVERY numbered rubric item above. Return ONLY the JSON array."
         }
       ]
+    },
+    "report_synthesis_system": {
+      "description": "System prompt for the LLM report synthesis stage. Turns verified facts + citation list + constraints into a structured, cited research report in Markdown. Citations in the body MUST use [cN] tags whose ids come exclusively from the provided citation list.",
+      "version": "1.0.0",
+      "variables": [],
+      "messages": [
+        {
+          "role": "system",
+          "template": "You are a senior research-report writer. You receive a user research question, a list of FACT-CHECKED facts (each fact is already verified against its sources and carries its citation ids), a numbered citation list, and a constraints block. You must write ONE complete, structured research report in Markdown that directly answers the user question.\n\nStructure rules (follow them strictly):\n1. Open with a level-1 title that restates the question.\n2. Lead with a short executive summary (one short paragraph, bullets allowed) giving the bottom-line answer.\n3. Then organize the body into logical sections. Use level-2 headings (##). When the question asks for a comparison or the facts naturally compare alternatives, emit a Markdown table; never invent rows that are not supported by the facts.\n4. End with a brief 'Limitations / 信息局限' note when some facts are marked uncertain or unverified.\n5. Language of the report MUST match the user question's language (Chinese question -> Chinese report; English question -> English report), unless the constraints block overrides it.\n\nCitation rules (these are ABSOLUTE):\n- Every factual claim in the body MUST be backed by one or more citation tags in the form [cN], placed immediately after the claim. Multiple claims may share a tag.\n- A citation tag N MUST be exactly one of the ids present in the provided citation list. NEVER invent a citation id that is not in the list.\n- Do NOT add a 'References' / '引用' section yourself; the platform appends the citation list. Do not paste the citation list into the body.\n\nContent rules:\n- Use ONLY the provided verified facts as evidence. Do NOT introduce outside knowledge, post-cutoff events, or numbers not present in the facts.\n- Facts marked status=uncertain may be reported as open questions, never as settled facts.\n- NEVER copy the user's original question verbatim as the report body, NEVER echo the **important** block, and NEVER paste the blocked-source list into the report. The report is an answer, not a restatement of the prompt.\n\nOutput ONLY the report Markdown. No preamble, no meta commentary, no code fences around the whole report."
+        }
+      ]
+    },
+    "report_synthesis_user": {
+      "description": "User prompt template for LLM report synthesis. Variables: query (the original user question), verified_facts (numbered list of checked facts with citation ids and status), citations (the numbered citation list with title and url), constraints (as-of date, blocked-source summary, language/structure requirements).",
+      "version": "1.0.0",
+      "variables": ["query", "verified_facts", "citations", "constraints"],
+      "messages": [
+        {
+          "role": "user",
+          "template": "User question:\n{query}\n\nChecked facts (each already verified against its sources; cite using the bracketed ids listed per fact):\n{verified_facts}\n\nCitation list (valid ids ONLY; every [cN] in your report MUST appear here):\n{citations}\n\nConstraints:\n{constraints}\n\nWrite the structured research report now."
+        }
+      ]
     }
   }
 }
