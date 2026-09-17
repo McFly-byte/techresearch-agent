@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     # ---- Search ------------------------------------------------------------
     tavily_api_key: SecretStr = Field(default=SecretStr(""))
 
+    # ---- Research execution ------------------------------------------------
+    research_timeout_seconds: float = 300.0  # per-task wall-clock budget
+
     # ---- Feishu ------------------------------------------------------------
     feishu_app_id: str = ""
     feishu_app_secret: SecretStr = Field(default=SecretStr(""))
@@ -114,6 +117,13 @@ class Settings(BaseSettings):
     def _ratio_in_unit_interval(cls, v: float) -> float:
         if not 0.0 < v <= 1.0:
             raise ValueError("ratio must be in (0, 1]")
+        return v
+
+    @field_validator("research_timeout_seconds")
+    @classmethod
+    def _positive_research_timeout(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("research_timeout_seconds must be positive")
         return v
 
     # ---- Helpers -----------------------------------------------------------

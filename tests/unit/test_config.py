@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from core.config import REDACTED, Settings, get_settings
 
 
@@ -89,6 +91,14 @@ def test_ratio_validator_rejects_bad_value(monkeypatch):  # type: ignore[no-unty
         pass
     else:
         raise AssertionError("expected ValidationError for ratio > 1")
+
+
+def test_research_timeout_must_be_positive(monkeypatch):  # type: ignore[no-untyped-def]
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("RESEARCH_TIMEOUT_SECONDS", "0")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def test_no_real_key_leak_in_source_tree():  # type: ignore[no-untyped-def]

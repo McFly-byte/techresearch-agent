@@ -25,7 +25,7 @@ class QwenProvider(BaseLLMProvider):
         model_id: str,
         base_url: str,
         api_key: str,
-        timeout: float = 30.0,
+        timeout: float = 60.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.model_id = model_id

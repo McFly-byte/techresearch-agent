@@ -277,7 +277,7 @@ class ResearchRunner:
                             "research_depth": rec.research_depth,
                         }
                     ),
-                    timeout=60.0,
+                    timeout=self._settings.research_timeout_seconds,
                 )
             except BaseException as exc:  # noqa: BLE001
                 planner_exc = exc
