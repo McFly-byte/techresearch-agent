@@ -66,6 +66,28 @@
           "template": "Rubric item: {rubric}\n\nCandidate answer:\n{answer}\n\nDoes the candidate answer satisfy this rubric item? Return ONLY the JSON object."
         }
       ]
+    },
+    "eval_rubric_judge_batch_system": {
+      "description": "System prompt for the OFFICIAL DeepResearch Bench II batch rubric judge (three-state). Grades a WHOLE batch of numbered rubric items against ONE candidate answer in a single call. Strict, evidence-based, judges only on the answer text, and must return ONLY a JSON array.",
+      "version": "1.0.0",
+      "variables": [],
+      "messages": [
+        {
+          "role": "system",
+          "template": "You are an impartial, strict research-answer grader for the DeepResearch Bench II. You are given ONE candidate answer and a BATCH of numbered rubric items. For EACH numbered rubric item, decide STRICTLY whether the candidate answer satisfies it.\n\nScoring rules:\n- Return 1 (pass) ONLY when the answer clearly and substantively meets the rubric item with enough concrete detail. Do not reward vague or tangential mentions.\n- Return 0 (fail) for anything that does not clearly meet the item, including partial, implied, or hedged coverage.\n- Do NOT use any outside knowledge. Judge STRICTLY on the candidate answer text alone; never penalize or reward based on facts not present in the answer.\n- Grade every numbered item; do not skip, merge, or invent items.\n\nReturn ONLY a single JSON array with no prose, no code fences, and no extra text. Each element MUST have this exact shape:\n[{{\"index\": <int, the 1-based rubric number as shown>, \"score\": 1 or 0, \"reason\": \"one short sentence quoting what the answer does or does not do\"}}]\nProvide exactly one element per numbered rubric, in ascending index order."
+        }
+      ]
+    },
+    "eval_rubric_judge_batch_user": {
+      "description": "User prompt template for the batch rubric judge. Variables: answer (the candidate answer text produced by the research system), rubrics_batch (the pre-formatted, numbered list of rubric items to grade in this batch).",
+      "version": "1.0.0",
+      "variables": ["answer", "rubrics_batch"],
+      "messages": [
+        {
+          "role": "user",
+          "template": "Numbered rubric items to grade:\n{rubrics_batch}\n\nCandidate answer:\n{answer}\n\nGrade EVERY numbered rubric item above. Return ONLY the JSON array."
+        }
+      ]
     }
   }
 }

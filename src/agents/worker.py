@@ -146,12 +146,16 @@ class WorkerNode:
             raise ConfigurationError(f"max_search_retries must be >= 0, got {max_search_retries!r}")
         self._web = web_search or FakeSearchProvider()
         self._fetcher = fetcher or FakeFetcher()
+        # Resolve tracing FIRST (before building the extractor) so the
+        # LLMFactExtractor receives the SAME noop/real TracingContext the
+        # worker itself uses — its LLM calls then emit prompt-tagged LLM runs.
+        self._tracing = tracing or noop_tracing()
         # When an LLM provider is available, use LLM-backed extraction.
         # It falls back to heuristic internally on parse failure.
         if fact_extractor is not None:
             self._extractor = fact_extractor
         elif llm_provider is not None:
-            self._extractor = LLMFactExtractor(llm_provider)
+            self._extractor = LLMFactExtractor(llm_provider, tracing=self._tracing)
         else:
             self._extractor = HeuristicFactExtractor()
         self._max_results = max_results
@@ -159,7 +163,6 @@ class WorkerNode:
         self._cancel = cancel_event or asyncio.Event()
         self._sleep = sleep_fn or _default_sleep
         self._llm = llm_provider
-        self._tracing = tracing or noop_tracing()
         if router is not None:
             self._router = router
         else:

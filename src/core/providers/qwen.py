@@ -8,12 +8,16 @@ response. If usage is missing, it is omitted (not faked).
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
 
 from core.exceptions import ProviderError, ProviderNotConfiguredError
 from core.providers.base import BaseLLMProvider, LLMResponse, Message
+
+# 可重试的 HTTP 状态码：限流与服务端瞬时错误。401/403（鉴权/配额）不重试。
+_RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 
 
 class QwenProvider(BaseLLMProvider):
@@ -25,13 +29,18 @@ class QwenProvider(BaseLLMProvider):
         model_id: str,
         base_url: str,
         api_key: str,
-        timeout: float = 60.0,
+        timeout: float = 120.0,
+        max_retries: int = 1,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.model_id = model_id
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
+        # 默认 120s：extractor 单次可发送上万字文档、judge 批次含长答案，
+        # 60s 容易在大上下文下误超时。
         self._timeout = timeout
+        # 瞬时错误（超时/连接错误/429/5xx）的重试次数；401/403 不重试。
+        self._max_retries = max(0, int(max_retries))
         self._client = client  # injectable for tests
 
     def is_configured(self) -> bool:
@@ -49,6 +58,7 @@ class QwenProvider(BaseLLMProvider):
             base_url=self._base_url,
             api_key=self._api_key,
             timeout=self._timeout,
+            max_retries=self._max_retries,
             client=self._client,
         )
 
@@ -81,15 +91,39 @@ class QwenProvider(BaseLLMProvider):
             client = httpx.AsyncClient(timeout=self._timeout)
             close_client = True
 
+        # 带退避的重试：仅对瞬时错误（超时/连接错误/429/5xx）重试；
+        # 401/403（鉴权/配额）立即抛出，重试无意义。
+        resp: httpx.Response | None = None
+        last_exc: Exception | None = None
+        max_attempts = self._max_retries + 1
+        for attempt in range(max_attempts):
+            try:
+                resp = await client.post(url, json=payload, headers=headers)
+            except httpx.TimeoutException as e:
+                # 超时不重试：模型忙/大输入慢，再等一个 120s 只会烧预算；
+                # 调用方（extractor/verifier）会快速回退 heuristic。
+                raise ProviderError(f"Qwen request timed out: {e}") from e
+            except httpx.HTTPError as e:
+                last_exc = e
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                    continue
+                raise ProviderError(f"Qwen request failed: {e}") from e
+
+            # 可重试的服务端/限流状态码：退避后重试。
+            if resp.status_code in _RETRYABLE_STATUS and attempt < max_attempts - 1:
+                await asyncio.sleep(1.0 * (attempt + 1))
+                continue
+            break
+
         try:
-            resp = await client.post(url, json=payload, headers=headers)
-        except httpx.TimeoutException as e:
-            raise ProviderError(f"Qwen request timed out: {e}") from e
-        except httpx.HTTPError as e:
-            raise ProviderError(f"Qwen request failed: {e}") from e
-        finally:
             if close_client:
                 await client.aclose()
+        except Exception:  # noqa: BLE001 - 关闭失败不影响主流程
+            pass
+
+        if resp is None:  # 理论上不会走到这里，防御性兜底
+            raise ProviderError(f"Qwen request failed: {last_exc}")
 
         if resp.status_code == 401:
             raise ProviderNotConfiguredError("Qwen returned 401 — check DASHSCOPE_API_KEY.")

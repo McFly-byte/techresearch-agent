@@ -46,8 +46,9 @@ import re
 from typing import Any
 
 from agents.budget import TokenUsage
-from core.prompts import PromptRegistry, get_default_registry
+from core.prompts import PromptRegistry, get_default_registry, load_lock
 from core.providers.base import BaseLLMProvider, LLMResponse, Message
+from core.tracing import TracingContext, noop_tracing
 from domain.models import Fact, SourceDocument
 
 log = logging.getLogger(__name__)
@@ -61,9 +62,11 @@ MAX_FACTS_PER_DOC = 8
 _MAX_SOURCE_CHARS_FOR_LLM = 6000
 
 # Hard total character bound on the messages actually transmitted to the
-# provider (system + user [+ assistant + repair]). This is the boundary the
-# acceptance tests enforce on the real outgoing messages.
-MAX_TOTAL_INPUT_CHARS = 120_000
+# provider (system + user [+ assistant + repair]). 24K chars ~= 6K tokens,
+# well within Qwen's context window and the 120s per-request timeout.
+# The previous 120K value caused ProviderError (timeout) on every extractor
+# call because the request body was too large for the API to process in time.
+MAX_TOTAL_INPUT_CHARS = 24_000
 
 
 class ExtractionResult(list):
@@ -166,6 +169,7 @@ class LLMFactExtractor:
         *,
         fallback: HeuristicFactExtractor | None = None,
         registry: PromptRegistry | None = None,
+        tracing: TracingContext | None = None,
     ) -> None:
         self._llm = llm
         self._fallback = fallback or HeuristicFactExtractor()
@@ -175,6 +179,18 @@ class LLMFactExtractor:
         self._registry = registry or get_default_registry()
         self._system_prompt = self._registry.render("fact_extraction_system").system_text()
         self._repair_prompt = self._registry.render("fact_extraction_repair").messages[0][1]
+        # LangSmith prompt association: wrap each real LLM call in an LLM-type
+        # run whose extra.metadata carries lc_hub_repo / lc_hub_commit_hash.
+        # When tracing is None we fall back to noop_tracing() (zero network).
+        # Commit hashes come from manifest.lock.json (the last pushed revision).
+        self._tracing = tracing or noop_tracing()
+        self._prompt_commits: dict[str, str] = {}
+        try:
+            for name, entry in load_lock().items():
+                self._prompt_commits[name] = entry.commit_hash
+        except Exception:  # noqa: BLE001
+            # Lock file missing / unreadable must never break extraction.
+            self._prompt_commits = {}
         # Aggregated usage across the first call and the optional repair call.
         # last_usage_estimated is True only when the provider returned no real
         # token counts for either call.
@@ -317,6 +333,7 @@ class LLMFactExtractor:
         *,
         model_id: str | None = None,
         llm: Any | None = None,
+        prompt_name: str = "fact_extraction_system",
     ) -> LLMResponse:
         """Single send entry: enforce the hard total input bound, then call.
 
@@ -325,21 +342,33 @@ class LLMFactExtractor:
         ``model_id`` override is forwarded to ``self._llm`` when it supports the
         kwarg (FakeLLM / QwenProvider). The shared provider's own ``model_id`` is
         NEVER mutated (boundary 3).
+
+        ``prompt_name`` selects which Prompt Hub prompt this call is attributed
+        to for LangSmith Application↔Prompt association.
         """
         bounded = self._fit_to_budget(messages)
         if llm is not None:
-            return await self._call_provider(llm, bounded, model_id)
-        return await self._call_provider(self._llm, bounded, model_id)
+            return await self._call_provider(llm, bounded, model_id, prompt_name)
+        return await self._call_provider(self._llm, bounded, model_id, prompt_name)
 
     async def _call_provider(
         self,
         provider: Any,
         messages: list[Message],
         model_id: str | None,
+        prompt_name: str = "fact_extraction_system",
     ) -> LLMResponse:
-        if model_id is not None and self._provider_accepts_model_id(provider):
-            return await provider.acomplete(messages, model_id=model_id)
-        return await provider.acomplete(messages)
+        """Issue the single provider call, wrapped in a prompt-tagged LLM span.
+
+        The span's LLM-type run carries ``lc_hub_repo=<prompt_name>`` and
+        ``lc_hub_commit_hash`` from the lock file, which is the signal
+        LangSmith uses to auto-associate this prompt to the Application.
+        """
+        commit = self._prompt_commits.get(prompt_name, "")
+        with self._tracing.llm_prompt_span(prompt_name, commit):
+            if model_id is not None and self._provider_accepts_model_id(provider):
+                return await provider.acomplete(messages, model_id=model_id)
+            return await provider.acomplete(messages)
 
     def _build_repair_messages(
         self,
@@ -437,7 +466,9 @@ class LLMFactExtractor:
         )
 
         try:
-            resp = await self._complete_bounded(messages, model_id=model_id, llm=llm)
+            resp = await self._complete_bounded(
+                messages, model_id=model_id, llm=llm, prompt_name="fact_extraction_system"
+            )
         except Exception as e:  # noqa: BLE001
             # Stable, redacted error: never the exception text or request body.
             log.warning(
@@ -465,7 +496,12 @@ class LLMFactExtractor:
         log.info("llm_extractor_unparseable attempting_one_repair")
         repair_messages = self._build_repair_messages(valid_docs, resp.text, user_context)
         try:
-            repair_resp = await self._complete_bounded(repair_messages, model_id=model_id, llm=llm)
+            repair_resp = await self._complete_bounded(
+                repair_messages,
+                model_id=model_id,
+                llm=llm,
+                prompt_name="fact_extraction_repair",
+            )
         except Exception as e:  # noqa: BLE001
             log.warning(
                 "llm_extractor_call_failed stage=repair error_type=%s",

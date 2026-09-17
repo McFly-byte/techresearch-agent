@@ -121,6 +121,24 @@ class TracingContext:
     ) -> SpanRecord:
         return SpanRecord(action="end", stage=stage, task_id=task_id, metadata={"status": status})
 
+    def llm_prompt_span(
+        self,
+        prompt_name: str,
+        prompt_commit: str,
+        *,
+        task_id: str = "",
+    ) -> contextlib.AbstractContextManager[None]:
+        """Context manager that wraps a single LLM call bound to a Prompt Hub prompt.
+
+        The default implementation is a zero-cost noop (``nullcontext``) so that
+        offline / noop tracing makes ZERO network calls. Real subclasses
+        (``LangSmithTracing``) create an LLM-type run whose
+        ``extra.metadata`` carries ``lc_hub_repo`` / ``lc_hub_commit_hash`` —
+        this is exactly the signal LangSmith uses to auto-associate a prompt
+        to an Application.
+        """
+        return contextlib.nullcontext()
+
 
 def noop_tracing() -> TracingContext:
     return TracingContext()
@@ -196,6 +214,7 @@ class LangSmithTracing(TracingContext):
         self._project = project_name
         self._open: dict[tuple[str, str], str] = {}  # (stage, task_id) -> run_id
         self._start_times: dict[tuple[str, str], float] = {}
+        self._run_stack: list[str] = []  # active span run_ids, innermost last
 
     def start_span(self, stage: str, *, task_id: str, **metadata: Any) -> SpanRecord:
         super().start_span(stage, task_id=task_id)
@@ -204,6 +223,7 @@ class LangSmithTracing(TracingContext):
         key = (stage, task_id)
         self._open[key] = run_id
         self._start_times[key] = time.time()
+        self._run_stack.append(run_id)
         with contextlib.suppress(Exception):
             self._client.create_run(
                 id=run_id,
@@ -229,6 +249,8 @@ class LangSmithTracing(TracingContext):
         key = (stage, task_id)
         run_id = self._open.pop(key, None)
         start_ts = self._start_times.pop(key, None)
+        if run_id and run_id in self._run_stack:
+            self._run_stack.remove(run_id)
         outputs: dict[str, Any] = {"status": status}
         if start_ts is not None:
             outputs["duration"] = round(time.time() - start_ts, 4)
@@ -257,6 +279,63 @@ class LangSmithTracing(TracingContext):
                     type(e).__name__,
                 )
         return SpanRecord(action="end", stage=stage, task_id=task_id, metadata=outputs)
+
+    @contextlib.contextmanager
+    def llm_prompt_span(
+        self,
+        prompt_name: str,
+        prompt_commit: str,
+        *,
+        task_id: str = "",
+    ):
+        """Create an LLM-type LangSmith run tagged with the Prompt Hub prompt.
+
+        On enter we ``create_run(run_type="llm", ...)`` whose
+        ``extra.metadata`` contains ``lc_hub_repo`` (the prompt name) and
+        ``lc_hub_commit_hash`` (the lock-file commit). On exit we
+        ``update_run(..., end_time=...)`` to close it.
+
+        The run is a TOP-LEVEL run in the project (we do not set parent_id):
+        LangSmith associates it to the project/application purely from the
+        prompt metadata. A ``task_id`` is accepted for symmetry with the stage
+        spans but is only attached as a tag — it does not force a parent link.
+        Every network call is wrapped in ``suppress(Exception)`` so a tracing
+        failure never breaks the real research call.
+        """
+        run_id = str(uuid.uuid4())
+        start_ts = time.time()
+        parent_id = self._run_stack[-1] if self._run_stack else None
+        with contextlib.suppress(Exception):
+            # NOTE: ``inputs`` is a REQUIRED positional of create_run; passing an
+            # empty dict keeps the run redaction policy (no prompt bodies leak)
+            # while satisfying the SDK signature. Association only depends on the
+            # extra.metadata below.
+            kwargs: dict[str, Any] = dict(
+                id=run_id,
+                name=prompt_name,
+                run_type="llm",
+                project_name=self._project,
+                inputs={},
+                tags=[prompt_name],
+                extra={
+                    "metadata": {
+                        "lc_hub_repo": prompt_name,
+                        "lc_hub_commit_hash": prompt_commit,
+                    }
+                },
+            )
+            if parent_id is not None:
+                kwargs["parent_run_id"] = parent_id
+            self._client.create_run(**kwargs)
+        try:
+            yield
+        finally:
+            with contextlib.suppress(Exception):
+                self._client.update_run(
+                    run_id,
+                    end_time=datetime.now(UTC),
+                )
+                _ = start_ts  # duration available for future use; not sent today
 
 
 # --- Factory ----------------------------------------------------------------

@@ -21,7 +21,13 @@ from evals.adapter import DeepResearchBench2Adapter, FixtureDataset
 from evals.baselines import make_research_runner_answerer
 from evals.configs import CONFIGS
 from evals.metrics import KeywordJudge, LLMRubricJudge
-from evals.runner import EvalRunner
+from evals.runner import (
+    LANGSMITH_DATASET_NAME,
+    EvalRunner,
+    LangSmithExperimentSink,
+    _git_commit,
+    _prompt_commits,
+)
 
 
 def _resolve_judge(kind: str):
@@ -86,6 +92,16 @@ def main() -> None:
     default=False,
     help="Allow running the full dataset without --limit.",
 )
+@click.option(
+    "--experiment/--no-experiment",
+    default=True,
+    help="完成每题后上传到 LangSmith Experiment（默认开启；live 模式才生效）。",
+)
+@click.option(
+    "--experiment-name",
+    default=None,
+    help="可选：自定义 LangSmith Experiment 名称。默认按 full/pilot + 时间戳生成。",
+)
 def run(
     dataset: Path | None,
     mode: str,
@@ -95,6 +111,8 @@ def run(
     output_dir: Path | None,
     resume: bool,
     confirm_full: bool,
+    experiment: bool,
+    experiment_name: str | None,
 ) -> None:
     """Run the eval harness over a dataset."""
     if concurrency != 1:
@@ -155,6 +173,31 @@ def run(
     provider = provider_model.split("/")[0]
     model = provider_model.split("/", 1)[1] if "/" in provider_model else "unknown"
 
+    # --- Optional: LangSmith Experiment 上传 --------------------------------
+    # 仅在 live 模式且指向真实 DRB2 数据集时启用；fake 冒烟保持离线。
+    experiment_sink = None
+    if experiment and mode == "live" and dataset is not None:
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        if experiment_name:
+            exp_name = experiment_name
+        elif confirm_full and limit >= n_total:
+            exp_name = f"drb2-full-live-qwen-{ts}"
+        else:
+            exp_name = f"drb2-pilot-live-qwen-{ts}"
+        experiment_sink = LangSmithExperimentSink(
+            experiment_name=exp_name,
+            dataset_name=LANGSMITH_DATASET_NAME,
+            dataset_hash=dataset_hash,
+            judge_model=model,
+            prompt_commits=_prompt_commits(),
+            git_commit=_git_commit(),
+            research_mode="live",
+        )
+        click.echo(
+            f"experiment: {'enabled' if experiment_sink.enabled else 'disabled'} "
+            f"(name={exp_name})"
+        )
+
     runner = EvalRunner(
         out_dir=out,
         config=config,
@@ -164,6 +207,7 @@ def run(
         dataset_hash=dataset_hash,
         provider=provider,
         model=model,
+        experiment_sink=experiment_sink,
     )
 
     click.echo(

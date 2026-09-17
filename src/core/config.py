@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     tavily_api_key: SecretStr = Field(default=SecretStr(""))
 
     # ---- Research execution ------------------------------------------------
-    research_timeout_seconds: float = 300.0  # per-task wall-clock budget
+    research_timeout_seconds: float = 600.0  # per-task wall-clock budget (real LLM calls can take 120s each)
 
     # ---- Feishu ------------------------------------------------------------
     feishu_app_id: str = ""

@@ -51,8 +51,11 @@ class EvalQuestion:
     # Per-dimension rubric breakdown: {"info_recall": [...], "analysis": [...], "presentation": [...]}
     rubrics_by_dimension: dict[str, list[str]] = field(default_factory=dict)
     # Blocked source references (title/authors/urls) — judge must penalize
-    # answers that cite these. From official DRB2 content.blocked.
+    # answers that cite these. From the LEGACY DRB2 content.blocked dict shape.
     blocked: dict[str, object] = field(default_factory=dict)
+    # 官方 DRB2 口径：content.blocked 是被屏蔽/不适用的 rubric 文本列表。
+    # 评分器会把命中这些文本的 rubric 直接记 -1，不调用 LLM、不计入均值。
+    blocked_rubrics: list[str] = field(default_factory=list)
     # Metadata from official dataset.
     language: str = ""  # "zh" / "en"
     theme: str = ""
@@ -205,10 +208,15 @@ class DeepResearchBench2Adapter:
                             dim_items = [str(x) for x in items if str(x).strip()]
                         rubrics_by_dim[dim] = dim_items
                         all_rubrics.extend(dim_items)
-                # Blocked references
-                blocked = content.get("blocked", {}) or {}
-                if not isinstance(blocked, dict):
-                    blocked = {}
+                # Blocked：官方口径是被屏蔽/不适用的 rubric 文本列表；
+                # 旧版本地形态是 {"title","authors","urls"} 来源引用 dict。
+                blocked_raw = content.get("blocked", {})
+                blocked_refs: dict[str, object] = {}
+                blocked_rubrics: list[str] = []
+                if isinstance(blocked_raw, list):
+                    blocked_rubrics = [str(x) for x in blocked_raw if str(x).strip()]
+                elif isinstance(blocked_raw, dict):
+                    blocked_refs = blocked_raw
                 # qid: stable per-row id. Prefer upstream "id", else row ordinal.
                 upstream_id = obj.get("id") or obj.get("qid")
                 qid = str(upstream_id) if upstream_id else f"drb2-{i:04d}"
@@ -221,7 +229,8 @@ class DeepResearchBench2Adapter:
                         tags=["deepresearch_bench_ii"],
                         rubrics=all_rubrics,
                         rubrics_by_dimension=rubrics_by_dim,
-                        blocked=blocked,
+                        blocked=blocked_refs,
+                        blocked_rubrics=blocked_rubrics,
                         language=str(obj.get("language", "")),
                         theme=str(obj.get("theme", "")),
                         license=str(obj.get("license", "")),

@@ -331,7 +331,10 @@ class ResearchRunner:
 
             if kit.mode == "live":
                 verifier_llm = kit.llm.with_model(self._settings.qwen_verifier_model)
-                nli = LLMNLI(verifier_llm)
+                # Pass tracing so the NLI LLM runs carry
+                # lc_hub_repo / lc_hub_commit_hash metadata and LangSmith
+                # associates citation_verifier_system / _user to the Application.
+                nli = LLMNLI(verifier_llm, tracing=self._tracing)
                 verifier = CitationVerifier(fetcher=kit.fetcher, nli=nli)
             else:
                 verifier = CitationVerifier(fetcher=kit.fetcher)

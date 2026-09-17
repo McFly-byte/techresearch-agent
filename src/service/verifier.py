@@ -26,8 +26,9 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
-from core.prompts import PromptRegistry, get_default_registry
+from core.prompts import PromptRegistry, get_default_registry, load_lock
 from core.providers.base import BaseLLMProvider, Message
+from core.tracing import TracingContext, noop_tracing
 from domain.models import Citation
 from domain.verification import (
     Claim,
@@ -474,11 +475,23 @@ class LLMNLI:
         llm: BaseLLMProvider,
         *,
         registry: PromptRegistry | None = None,
+        tracing: TracingContext | None = None,
     ) -> None:
         self._llm = llm
         self._registry = registry or get_default_registry()
         # Render the templates once (local mode is zero-network).
         self._sys = self._registry.render("citation_verifier_system").system_text()
+        # LangSmith prompt association: each NLI call uses BOTH the
+        # citation_verifier_system template and the citation_verifier_user
+        # template, so we wrap the single provider call in TWO nested LLM-type
+        # runs (one per prompt repo). Commit hashes come from manifest.lock.json.
+        self._tracing = tracing or noop_tracing()
+        self._prompt_commits: dict[str, str] = {}
+        try:
+            for name, entry in load_lock().items():
+                self._prompt_commits[name] = entry.commit_hash
+        except Exception:  # noqa: BLE001
+            self._prompt_commits = {}
 
     def __call__(self, claim: str, evidence: str) -> Any:
         """Allow both ``nli(claim, evidence)`` (awaitable) and
@@ -491,7 +504,19 @@ class LLMNLI:
         for _role, content in rendered.messages:
             messages.append(Message(role="user", content=content))
         try:
-            resp = await self._llm.acomplete(messages)
+            # Wrap the single NLI call in two nested LLM-type runs: the outer
+            # attributed to citation_verifier_system, the inner to
+            # citation_verifier_user. Each carries its own lc_hub_repo + commit
+            # metadata so LangSmith associates BOTH prompts to the Application.
+            sys_commit = self._prompt_commits.get("citation_verifier_system", "")
+            user_commit = self._prompt_commits.get("citation_verifier_user", "")
+            with self._tracing.llm_prompt_span("citation_verifier_system", sys_commit), \
+                 self._tracing.llm_prompt_span("citation_verifier_user", user_commit):
+                resp = await self._llm.acomplete(messages)
+        except NLIProviderError:
+            # Re-raise our own stable errors unchanged (they already carry the
+            # redacted code); the wrapping context managers close cleanly.
+            raise
         except Exception as e:  # noqa: BLE001
             # P0#1: raise a stable, redacted error. Never return "neutral" (that
             # washes a provider outage into a plausible verdict), never log the
