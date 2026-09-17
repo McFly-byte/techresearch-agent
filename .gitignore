@@ -1,0 +1,76 @@
+# ---- Secrets & local env --------------------------------------------------
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+secrets/
+
+# ---- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Virtualenvs (project-local or sibling)
+.venv/
+venv/
+env/
+
+# ---- Runtime data (design doc ch.13: data/chroma, data/memory, data/inputs)
+data/chroma/
+data/memory/
+data/inputs/
+!data/.gitkeep
+
+# ---- Node / frontend ------------------------------------------------------
+node_modules/
+web/dist/
+web/node_modules/
+web/.vite/
+
+# ---- IDE / OS -------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- Evals (large, non-redistributable per research/04_fact_audit) --------
+evals/data/
+evals/reports/plots/
+
+# ---- Data / runs / outputs (benchmark datasets, raw run outputs) ----------
+data/
+!data/.gitkeep
+data_e2e/
+*.jsonl
+runs/
+outputs/
+
+# ---- Logs / cookies / tokens ----------------------------------------------
+*.log
+logs/
+cookies/
+tokens/
+*.token
+
+# ---- E2E test artifacts ---------------------------------------------------
+playwright-report/
+test-results/
+*.crdownload
+
+# ---- Agent workspace / scratch --------------------------------------------
+.sessions/

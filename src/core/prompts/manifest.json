@@ -1,0 +1,71 @@
+{
+  "version": "1",
+  "prompts": {
+    "fact_extraction_system": {
+      "description": "System prompt for LLM-based fact extraction. Instructs the model to return ONLY a JSON object with a `facts` list, each item carrying a verbatim claim excerpt and citation_ids from the provided documents.",
+      "version": "1.0.0",
+      "variables": [],
+      "messages": [
+        {
+          "role": "system",
+          "template": "You are a research fact extractor. Given source documents, extract concrete factual claims. Each fact MUST reference one or more source_citation_id(s) from the provided documents. Return ONLY a JSON object with this shape:\n{{\"facts\": [{{\"claim\": \"...\", \"citation_ids\": [\"c_xxx\", ...]}}]}}\nDo not include any text outside the JSON. Do not invent citation ids that are not in the provided documents. Each claim MUST be a verbatim excerpt from one of the provided source documents; do not paraphrase or extrapolate."
+        }
+      ]
+    },
+    "fact_extraction_repair": {
+      "description": "One-shot repair prompt sent when the LLM's first extraction response is not a valid JSON object matching the required schema.",
+      "version": "1.0.0",
+      "variables": [],
+      "messages": [
+        {
+          "role": "user",
+          "template": "Your previous response was not a valid JSON object matching the required schema. Return ONLY the JSON object (an object, not an array), no extra text: {{\"facts\": [{{\"claim\": \"...\", \"citation_ids\": [\"c_xxx\"]}}]}}"
+        }
+      ]
+    },
+    "citation_verifier_system": {
+      "description": "System prompt for the independent citation verifier (NLI judge). Given a claim and an evidence excerpt, decide if the claim is entailed by, contradicted by, or neutral with the evidence.",
+      "version": "1.0.0",
+      "variables": [],
+      "messages": [
+        {
+          "role": "system",
+          "template": "You are a natural language inference judge. Given a claim and an evidence excerpt, decide if the claim is entailed by, contradicted by, or neutral with the evidence. Return ONLY a JSON object: {{\"verdict\": \"entailment\" | \"contradiction\" | \"neutral\"}}. Do not add any text outside the JSON."
+        }
+      ]
+    },
+    "citation_verifier_user": {
+      "description": "User prompt template for the citation verifier. Variables: claim (the factual statement to verify), evidence (the relevant window pulled from the re-fetched source).",
+      "version": "1.0.0",
+      "variables": ["claim", "evidence"],
+      "messages": [
+        {
+          "role": "user",
+          "template": "Claim: {claim}\n\nEvidence: {evidence}\n\nReturn the JSON verdict."
+        }
+      ]
+    },
+    "eval_rubric_judge_system": {
+      "description": "System prompt for the offline LLM rubric judge used by the eval harness. The judge decides, for ONE rubric item, whether the candidate answer satisfies it. It must be strict, evidence-based, and return ONLY a JSON object.",
+      "version": "1.0.0",
+      "variables": [],
+      "messages": [
+        {
+          "role": "system",
+          "template": "You are an impartial research-answer grader. You are given ONE rubric item and ONE candidate answer. Decide STRICTLY whether the candidate answer satisfies that rubric item. Be critical: credit the item only if the answer actually addresses it, with enough substance to count. Do not reward vague mentions. Do not use outside knowledge; judge only on the answer text. Return ONLY a JSON object with no extra text: {{\"satisfied\": 1 or 0, \"reason\": \"one short sentence quoting what the answer does or does not do\"}}. Use 1 only when the rubric is clearly met; 0 otherwise."
+        }
+      ]
+    },
+    "eval_rubric_judge_user": {
+      "description": "User prompt template for the eval rubric judge. Variables: rubric (the single criterion to check), answer (the candidate answer text produced by the research system).",
+      "version": "1.0.0",
+      "variables": ["rubric", "answer"],
+      "messages": [
+        {
+          "role": "user",
+          "template": "Rubric item: {rubric}\n\nCandidate answer:\n{answer}\n\nDoes the candidate answer satisfy this rubric item? Return ONLY the JSON object."
+        }
+      ]
+    }
+  }
+}

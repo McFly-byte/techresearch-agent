@@ -1,0 +1,98 @@
+# TechResearch Agent — Python project manifest
+# Phase 0: skeleton only. LangGraph / LangChain / Chroma / Tavily / Lark SDK are
+# intentionally NOT runtime dependencies yet; they are added in later phases once
+# the Phase-0 baseline (config + provider abstraction + health endpoint) is green.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "techresearch-agent"
+version = "0.0.0"
+description = "Open-source Deep Research Agent for technical decision support (Phase 0 skeleton)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "TechResearch Agent maintainers" }]
+
+# Runtime dependencies needed to boot the Phase-0/1 baseline.
+# Phase 1 adds the tool adapters (tavily, arxiv, trafilatura, pypdf).
+# LangGraph/LangChain are installed for forward compatibility but NOT imported
+# by phase 1 code (the slice is a plain async pipeline; the graph arrives in
+# phase 2).
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "click>=8.1",
+    "httpx>=0.27",
+    "langgraph>=1.0",
+    "langgraph-checkpoint-sqlite>=3.0",
+    "tavily-python>=0.5",
+    "trafilatura>=2.0",
+    "pypdf>=4.0",
+    "arxiv>=2.0",
+]
+
+[project.optional-dependencies]
+# Group "dev": everything needed to run tests, lint, type-check locally.
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+# After `pip install -e .`, `tra` resolves against the flat src/ layout where
+# `cli` is a top-level package (see [tool.setuptools.packages.find] above).
+tra = "cli.doctor:main"
+# Eval harness CLI. Runs from the project root (evals is a top-level package).
+tra-eval = "evals.cli:main"
+
+# Setuptools layout: flat `src/` becomes the import root, so
+# `from core.config import settings` and `from api.main import app` work as
+# written in docs/技术设计文档.md.
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# --- pytest ---------------------------------------------------------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+pythonpath = ["."]
+filterwarnings = [
+    "ignore:the anyio.abc.BlockingPortal alias is deprecated.*:DeprecationWarning",
+]
+
+# --- ruff ------------------------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests", "evals"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",  # line length handled by formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+
+# --- mypy -------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+packages = ["core", "api", "cli", "domain", "tools", "service", "graph", "agents", "evals"]
+mypy_path = ["src"]
+strict = false
+ignore_missing_imports = true
+warn_unused_ignores = true
+no_implicit_optional = true
+exclude = ["evals/data/"]

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>TechResearch Agent 阶段2 编排状态图</title>
+<style>
+  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; background: #fafafa; color: #222; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 20px; }
+  p.meta { color: #555; font-size: 13px; line-height: 1.6; }
+  svg { width: 100%; height: auto; background: #fff; border: 1px solid #e2e2e2; border-radius: 8px; }
+  .legend { font-size: 12px; color: #444; margin-top: 8px; line-height: 1.7; }
+  code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>阶段2 编排状态图（Supervisor–Worker）</h1>
+  <p class="meta">
+    本图严格对应 <code>src/graph/builder.py</code> 的实际节点与边（无装饰节点）。
+    路由逻辑见 <code>src/agents/supervisor.py::decide_dispatch</code>（纯函数），
+    状态合并见 <code>src/graph/state.py</code>（typed reducers，按 id 确定性排序）。
+    <code>planner</code> 节点先 <code>decompose(query, *, user_context, research_depth)</code>
+    再调用纯函数 <code>validate_plan</code>：未知依赖 / 重复 task_id / 自依赖 / 依赖环会立即抛
+    <code>InvalidPlanError</code>，而不是拖到图递归上限。
+    并发由 <code>max_workers</code>（必须 &gt;0，否则构造期报错）硬上限约束；
+    <code>Send</code> 扇出到 <code>worker</code> 分支并行执行，每个分支经 <code>worker &rarr; collector</code> 汇合；
+    循环由 <code>budget.can_replan()</code>（<code>max_replans</code>）有界。
+  </p>
+
+<svg viewBox="0 0 920 760" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#444"/>
+    </marker>
+    <marker id="arrowLoop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1f6feb"/>
+    </marker>
+  </defs>
+
+  <!-- START -->
+  <circle cx="460" cy="40" r="18" fill="#222"/>
+  <text x="460" y="45" text-anchor="middle" fill="#fff" font-size="12">START</text>
+
+  <!-- planner -->
+  <rect x="380" y="80" width="160" height="46" rx="8" fill="#eef4ff" stroke="#1f6feb" stroke-width="1.5"/>
+  <text x="460" y="100" text-anchor="middle" font-weight="600">planner</text>
+  <text x="460" y="117" text-anchor="middle" font-size="11" fill="#555">decompose + validate_plan</text>
+
+  <!-- supervisor -->
+  <rect x="370" y="170" width="180" height="56" rx="8" fill="#eef4ff" stroke="#1f6feb" stroke-width="1.5"/>
+  <text x="460" y="193" text-anchor="middle" font-weight="600">supervisor</text>
+  <text x="460" y="210" text-anchor="middle" font-size="11" fill="#555">decide_dispatch(subtasks, max_workers)</text>
+
+  <!-- worker (Send fan-out) -->
+  <rect x="660" y="170" width="200" height="56" rx="8" fill="#eaf7ee" stroke="#1a7f37" stroke-width="1.5"/>
+  <text x="760" y="193" text-anchor="middle" font-weight="600">worker (Send fan-out)</text>
+  <text x="760" y="210" text-anchor="middle" font-size="11" fill="#555">run_task: search→fetch→extract</text>
+
+  <!-- collector -->
+  <rect x="370" y="320" width="180" height="52" rx="8" fill="#fff7e6" stroke="#9a6700" stroke-width="1.5"/>
+  <text x="460" y="342" text-anchor="middle" font-weight="600">collector</text>
+  <text x="460" y="359" text-anchor="middle" font-size="11" fill="#555">merge worker results</text>
+
+  <!-- replan diamond -->
+  <polygon points="460,430 560,470 460,510 360,470" fill="#f3e8ff" stroke="#8250df" stroke-width="1.5"/>
+  <text x="460" y="468" text-anchor="middle" font-weight="600">replan</text>
+  <text x="460" y="484" text-anchor="middle" font-size="11" fill="#555">budget.can_replan()?</text>
+
+  <!-- writer -->
+  <rect x="380" y="560" width="160" height="46" rx="8" fill="#eef4ff" stroke="#1f6feb" stroke-width="1.5"/>
+  <text x="460" y="580" text-anchor="middle" font-weight="600">writer</text>
+  <text x="460" y="597" text-anchor="middle" font-size="11" fill="#555">render report_markdown</text>
+
+  <!-- END -->
+  <circle cx="460" cy="660" r="18" fill="#222"/>
+  <text x="460" y="665" text-anchor="middle" fill="#fff" font-size="12">END</text>
+
+  <!-- Edges -->
+  <!-- START -> planner -->
+  <line x1="460" y1="58" x2="460" y2="80" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- planner -> supervisor -->
+  <line x1="460" y1="126" x2="460" y2="170" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- supervisor -> worker (Send dispatch) -->
+  <line x1="550" y1="198" x2="660" y2="198" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="605" y="190" text-anchor="middle" font-size="10.5" fill="#1a7f37">Send: dispatch ≤ free_slots</text>
+
+  <!-- worker -> collector -->
+  <path d="M 760 226 L 760 300 L 560 340" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="720" y="290" text-anchor="middle" font-size="10.5" fill="#555">per worker branch</text>
+
+  <!-- collector -> supervisor (loop back, more work) -->
+  <path d="M 380 330 C 300 300, 300 220, 370 210" fill="none" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arrowLoop)"/>
+  <text x="296" y="275" text-anchor="middle" font-size="10.5" fill="#1f6feb">more dispatchable → loop</text>
+
+  <!-- supervisor -> collector (no dispatch / wait) -->
+  <line x1="460" y1="226" x2="460" y2="320" stroke="#444" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+  <text x="478" y="280" font-size="10.5" fill="#555">no free slot / deps unmet → wait</text>
+
+  <!-- collector -> replan (finish) -->
+  <line x1="460" y1="372" x2="460" y2="430" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="478" y="405" font-size="10.5" fill="#555">finish (all terminal)</text>
+
+  <!-- replan -> supervisor (replan added) -->
+  <path d="M 360 470 C 250 430, 250 230, 370 205" fill="none" stroke="#8250df" stroke-width="1.5" marker-end="url(#arrowLoop)"/>
+  <text x="240" y="360" text-anchor="middle" font-size="10.5" fill="#8250df">add follow-up task</text>
+
+  <!-- replan -> writer (stop) -->
+  <line x1="460" y1="510" x2="460" y2="560" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="478" y="540" font-size="10.5" fill="#555">enough facts / replans exhausted</text>
+
+  <!-- writer -> END -->
+  <line x1="460" y1="606" x2="460" y2="642" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+</svg>
+
+  <div class="legend">
+    <strong>边与语义（对应 builder.py / supervisor.py）：</strong><br>
+    &bull; <code>START&rarr;planner&rarr;supervisor</code>：入口。<code>planner</code> 内部先 <code>decompose(query, *, user_context, research_depth)</code>（统一 Planner 协议，<code>RetryingPlanner</code> 签名一致），再 <code>validate_plan</code> 结构校验；非法计划立即抛 <code>InvalidPlanError</code>。<br>
+    &bull; <code>supervisor&rarr;worker</code>（绿色实线）：<code>Command(goto=[Send("worker", {"task": t}) ...])</code>，每次最多派发 <code>max_workers - running</code> 个无依赖任务。<br>
+    &bull; <code>worker&rarr;collector</code>：每个并行分支结果经 typed reducer 合并（<code>merge_subtasks / merge_facts / merge_citations / merge_errors</code>，按 id 确定性排序、交换律成立；同 task_id 完成优先于失败）。<br>
+    &nbsp;&nbsp;- <strong>同 id 不同 payload 冲突</strong>：不采用"首次到达赢"，而用 <code>model_dump_json(exclude={extracted_at,fetched_at})</code> 字典序选稳定 winner（完成优先于失败不变），故 worker 完成顺序不决定结果。<br>
+    &bull; <code>collector&rarr;supervisor</code>（蓝色虚线回环）：仍有可派发任务则继续循环。<br>
+    &bull; <code>supervisor&rarr;collector</code>（黑色虚线）：无可派发任务（槽位满、依赖未满足、或仍有 running 任务）时等待。无 pending 且有 running &rarr; wait；无 pending 且无 running（含仅 failed/blocked）&rarr; finish。<br>
+    &bull; <code>collector&rarr;replan</code>：所有任务进入终态。<br>
+    &bull; <code>replan&rarr;supervisor</code>（紫色回环）：证据不足且 <code>budget.can_replan()</code> 为真时追加一个 follow-up 任务，循环有界（<code>max_replans</code>）。<br>
+    &bull; <code>replan&rarr;writer&rarr;END</code>：证据足够或重排耗尽，写出报告并结束。
+  </div>
+</div>
+</body>
+</html>

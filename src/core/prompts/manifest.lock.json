@@ -1,0 +1,41 @@
+{
+  "version": "1",
+  "prompts": {
+    "citation_verifier_system": {
+      "commit_hash": "9bdf4de1",
+      "tags": [],
+      "pushed_at": "2026-09-17T12:34:13.343713+00:00",
+      "identifier": "citation_verifier_system"
+    },
+    "citation_verifier_user": {
+      "commit_hash": "52edcb16",
+      "tags": [],
+      "pushed_at": "2026-09-17T12:34:16.755145+00:00",
+      "identifier": "citation_verifier_user"
+    },
+    "fact_extraction_repair": {
+      "commit_hash": "7e796f5b",
+      "tags": [],
+      "pushed_at": "2026-09-17T11:54:57.171036+00:00",
+      "identifier": "fact_extraction_repair"
+    },
+    "fact_extraction_system": {
+      "commit_hash": "17576e9c",
+      "tags": [],
+      "pushed_at": "2026-09-17T11:54:55.115093+00:00",
+      "identifier": "fact_extraction_system"
+    },
+    "eval_rubric_judge_system": {
+      "commit_hash": "78595230",
+      "tags": ["techresearch-agent", "eval", "judge", "runtime"],
+      "pushed_at": "2026-09-18T00:40:00+00:00",
+      "identifier": "eval_rubric_judge_system"
+    },
+    "eval_rubric_judge_user": {
+      "commit_hash": "582bce68",
+      "tags": ["techresearch-agent", "eval", "judge", "runtime"],
+      "pushed_at": "2026-09-18T00:40:00+00:00",
+      "identifier": "eval_rubric_judge_user"
+    }
+  }
+}

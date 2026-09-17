@@ -1,0 +1,218 @@
+<html style="margin:0;padding:0;">
+<title>TechResearch Agent — 用户 Query 端到端执行路径</title>
+<div style="width:100%;box-sizing:border-box;background:#f7f7f5;font-family:'Segoe UI','Microsoft YaHei',sans-serif;padding:16px;color:#1a1b1c;">
+<svg viewBox="0 0 1400 2200" width="100%" xmlns="http://www.w3.org/2000/svg" style="display:block;max-width:1400px;margin:0 auto;background:#fff;border:1px solid #e4e3dd;">
+<defs>
+  <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#4f6b9a"/></marker>
+  <marker id="okarr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#35705a"/></marker>
+  <marker id="warnarr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#9a6a2f"/></marker>
+  <style>
+    .title{font-size:28px;font-weight:700;fill:#1a1b1c}.sub{font-size:14px;fill:#5f6670}.phase{font-size:17px;font-weight:700;fill:#fff}.step{font-size:14px;font-weight:700;fill:#1a1b1c}.body{font-size:13px;fill:#40464f}.small{font-size:11px;fill:#69717d}.mono{font-size:11px;fill:#34445e;font-family:Consolas,'Microsoft YaHei',monospace}.metric{font-size:14px;font-weight:700;fill:#35705a}.lane{font-size:12px;font-weight:700;fill:#5f6670;letter-spacing:1px}.num{font-size:12px;font-weight:700;fill:#fff}.tag{font-size:11px;font-weight:700}.node{fill:#fff;stroke:#aab2bf;stroke-width:1.3}.blue{stroke:#4f6b9a}.green{stroke:#35705a}.amber{stroke:#9a6a2f}.red{stroke:#a14e50}.dash{stroke-dasharray:6 5}.flow{stroke:#4f6b9a;stroke-width:2;fill:none;marker-end:url(#arr)}.okflow{stroke:#35705a;stroke-width:2;fill:none;marker-end:url(#okarr)}.warnflow{stroke:#9a6a2f;stroke-width:1.6;fill:none;stroke-dasharray:6 5;marker-end:url(#warnarr)}
+  </style>
+</defs>
+
+<!-- Header -->
+<text x="700" y="48" text-anchor="middle" class="title">用户 Query 提交后的完整执行路径</text>
+<text x="700" y="76" text-anchor="middle" class="sub">源码核对 + 实际离线运行（fake mode）· 成功路径示意</text>
+<rect x="70" y="98" width="1260" height="86" rx="8" fill="#eef2f7" stroke="#c8d1df"/>
+<text x="92" y="124" class="step">本次模拟输入</text>
+<text x="92" y="148" class="body">Query：“LangGraph vs LlamaIndex”　Depth：standard　Context：“面向 Python Agent 开发新人，关注架构、检索与生产落地”</text>
+<text x="92" y="170" class="small">真实运行模式：fake（预定义离线资料；不访问网络）　|　最终状态：completed</text>
+
+<!-- Lanes -->
+<rect x="30" y="210" width="185" height="1870" fill="#fafafa" stroke="#e4e3dd"/>
+<rect x="215" y="210" width="770" height="1870" fill="#fff" stroke="#e4e3dd"/>
+<rect x="985" y="210" width="385" height="1870" fill="#fafafa" stroke="#e4e3dd"/>
+<text x="122" y="235" text-anchor="middle" class="lane">执行主体 / 源码</text>
+<text x="600" y="235" text-anchor="middle" class="lane">主执行路径</text>
+<text x="1177" y="235" text-anchor="middle" class="lane">状态 / 数据变化</text>
+<line x1="30" y1="248" x2="1370" y2="248" stroke="#e4e3dd"/>
+
+<!-- Phase 1 -->
+<rect x="30" y="260" width="1340" height="34" fill="#4f6b9a"/><text x="50" y="283" class="phase">阶段 1　前端提交与任务创建</text>
+
+<text x="48" y="330" class="body">React Web UI</text><text x="48" y="349" class="mono">web/src/App.tsx</text>
+<circle cx="256" cy="328" r="15" fill="#4f6b9a"/><text x="256" y="333" text-anchor="middle" class="num">1</text>
+<rect x="285" y="304" width="650" height="58" rx="6" class="node blue"/>
+<text x="305" y="328" class="step">用户填写 Query、Context、Depth 并点击 Research</text>
+<text x="305" y="350" class="mono">POST /api/research {query, user_context, research_depth}</text>
+<rect x="1010" y="305" width="330" height="56" rx="6" fill="#eef2f7" stroke="#c8d1df"/>
+<text x="1028" y="328" class="body">输入校验：query 1–2000 字符</text><text x="1028" y="348" class="small">ResearchRequest · Pydantic</text>
+<line x1="610" y1="362" x2="610" y2="389" class="flow"/>
+
+<text x="48" y="415" class="body">FastAPI</text><text x="48" y="434" class="mono">api/main.py</text>
+<circle cx="256" cy="412" r="15" fill="#4f6b9a"/><text x="256" y="417" text-anchor="middle" class="num">2</text>
+<rect x="285" y="388" width="650" height="58" rx="6" class="node blue"/>
+<text x="305" y="412" class="step">创建 TaskRecord，并启动后台协程</text>
+<text x="305" y="434" class="mono">store.create(...) → asyncio.create_task(run_safe(runner, rec))</text>
+<rect x="1010" y="389" width="330" height="56" rx="6" fill="#eef2f7" stroke="#c8d1df"/>
+<text x="1028" y="412" class="body">status = queued</text><text x="1028" y="432" class="small">task_id = task_&lt;8位随机串&gt;</text>
+<line x1="610" y1="446" x2="610" y2="473" class="flow"/>
+
+<text x="48" y="499" class="body">前端 ProgressPage</text><text x="48" y="518" class="mono">web/src/App.tsx</text>
+<circle cx="256" cy="496" r="15" fill="#4f6b9a"/><text x="256" y="501" text-anchor="middle" class="num">3</text>
+<rect x="285" y="472" width="650" height="58" rx="6" class="node blue"/>
+<text x="305" y="496" class="step">跳转进度页并建立 SSE 监听</text>
+<text x="305" y="518" class="mono">GET /api/research/{id} + EventSource(/stream)</text>
+<rect x="1010" y="473" width="330" height="56" rx="6" fill="#eef2f7" stroke="#c8d1df"/>
+<text x="1028" y="496" class="body">持续接收 stage / done / error</text><text x="1028" y="516" class="small">事件按 event_id 去重</text>
+
+<!-- Phase 2 -->
+<rect x="30" y="552" width="1340" height="34" fill="#59765c"/><text x="50" y="575" class="phase">阶段 2　Runner 初始化运行环境</text>
+
+<text x="48" y="622" class="body">ResearchRunner</text><text x="48" y="641" class="mono">api/runner.py</text>
+<circle cx="256" cy="620" r="15" fill="#35705a"/><text x="256" y="625" text-anchor="middle" class="num">4</text>
+<rect x="285" y="596" width="650" height="58" rx="6" class="node green"/>
+<text x="305" y="620" class="step">记录 queued → running 事件并选择 ProviderKit</text>
+<text x="305" y="642" class="mono">fake: FakeLLM + CannedSearch + FakeFetcher</text>
+<rect x="1010" y="597" width="330" height="56" rx="6" fill="#edf5f0" stroke="#b8d2c2"/>
+<text x="1028" y="620" class="body">本次：mode = fake</text><text x="1028" y="640" class="small">live 则要求 Tavily + DashScope 密钥</text>
+<line x1="610" y1="654" x2="610" y2="681" class="okflow"/>
+
+<text x="48" y="708" class="body">Runner + Core</text><text x="48" y="727" class="mono">budget / router / tracing</text>
+<circle cx="256" cy="705" r="15" fill="#35705a"/><text x="256" y="710" text-anchor="middle" class="num">5</text>
+<rect x="285" y="680" width="650" height="60" rx="6" class="node green"/>
+<text x="305" y="704" class="step">构建 BudgetManager、ModelRouter、WorkerNode</text>
+<text x="305" y="726" class="body">注入搜索、抓取、LLM、追踪；再调用 build_graph(max_workers)</text>
+<rect x="1010" y="681" width="330" height="58" rx="6" fill="#edf5f0" stroke="#b8d2c2"/>
+<text x="1028" y="704" class="body">token 总预算：500,000</text><text x="1028" y="724" class="small">本次最后使用 760 tokens</text>
+
+<!-- Phase 3 -->
+<rect x="30" y="764" width="1340" height="34" fill="#426978"/><text x="50" y="787" class="phase">阶段 3　LangGraph 规划、调度与并行研究</text>
+
+<text x="48" y="834" class="body">Planner Node</text><text x="48" y="853" class="mono">agents/planner.py</text>
+<circle cx="256" cy="832" r="15" fill="#426978"/><text x="256" y="837" text-anchor="middle" class="num">6</text>
+<rect x="285" y="808" width="650" height="66" rx="6" class="node blue"/>
+<text x="305" y="832" class="step">启发式拆分 Query，并校验 SubTask DAG</text>
+<text x="305" y="853" class="body">standard → 4 个任务；比较型 Query → 前两项独立，后两项依赖前两项</text>
+<rect x="1010" y="809" width="330" height="64" rx="6" fill="#eef2f7" stroke="#c8d1df"/>
+<text x="1028" y="831" class="body">task_1：LangGraph 架构</text><text x="1028" y="849" class="body">task_2：LlamaIndex 检索架构</text><text x="1028" y="867" class="small">task_3/4 depends_on [1,2]</text>
+<line x1="610" y1="874" x2="610" y2="901" class="flow"/>
+
+<text x="48" y="928" class="body">Supervisor Node</text><text x="48" y="947" class="mono">agents/supervisor.py</text>
+<circle cx="256" cy="925" r="15" fill="#426978"/><text x="256" y="930" text-anchor="middle" class="num">7</text>
+<rect x="285" y="900" width="650" height="60" rx="6" class="node blue"/>
+<text x="305" y="924" class="step">按依赖、状态、优先级选出可运行任务</text>
+<text x="305" y="946" class="mono">Send("worker", payload) · 并行上限 max_workers = 3</text>
+<rect x="1010" y="901" width="330" height="58" rx="6" fill="#eef2f7" stroke="#c8d1df"/>
+<text x="1028" y="924" class="body">第 1 波：task_1 + task_2</text><text x="1028" y="944" class="small">task_3/4 暂因依赖未满足而等待</text>
+<line x1="610" y1="960" x2="610" y2="987" class="flow"/>
+
+<!-- Worker expanded -->
+<text x="48" y="1014" class="body">Worker × 并行任务</text><text x="48" y="1033" class="mono">agents/worker.py</text>
+<circle cx="256" cy="1011" r="15" fill="#426978"/><text x="256" y="1016" text-anchor="middle" class="num">8</text>
+<rect x="285" y="986" width="650" height="204" rx="6" fill="#f9fbfc" stroke="#426978" stroke-width="1.5"/>
+<text x="305" y="1011" class="step">每个 SubTask 执行有界研究循环</text>
+<rect x="305" y="1030" width="112" height="38" rx="4" fill="#eef2f7" stroke="#8fa2bc"/><text x="361" y="1054" text-anchor="middle" class="body">① Search</text>
+<line x1="417" y1="1049" x2="443" y2="1049" class="flow"/>
+<rect x="445" y="1030" width="112" height="38" rx="4" fill="#eef2f7" stroke="#8fa2bc"/><text x="501" y="1054" text-anchor="middle" class="body">② Fetch</text>
+<line x1="557" y1="1049" x2="583" y2="1049" class="flow"/>
+<rect x="585" y="1030" width="112" height="38" rx="4" fill="#eef2f7" stroke="#8fa2bc"/><text x="641" y="1054" text-anchor="middle" class="body">③ Extract</text>
+<line x1="697" y1="1049" x2="723" y2="1049" class="flow"/>
+<rect x="725" y="1030" width="160" height="38" rx="4" fill="#eef2f7" stroke="#8fa2bc"/><text x="805" y="1054" text-anchor="middle" class="body">④ Reflect / Stop?</text>
+<path d="M805 1068 L805 1090 L361 1090 L361 1068" class="warnflow"/>
+<text x="585" y="1107" text-anchor="middle" class="small">证据不足 → 改写 query 进入下一轮；受轮次、预算、取消与输入长度硬限制</text>
+<line x1="320" y1="1124" x2="900" y2="1124" stroke="#d8dde5"/>
+<text x="305" y="1146" class="body">Extract 前：预留最坏情况 token → 调用 LLM/启发式提取 → commit 实际用量；异常或取消则 release</text>
+<text x="305" y="1168" class="small">输出：Fact[]、Citation[]、errors[]、SubTask(status + stop_reason)；所有 URL 错误信息先脱敏</text>
+<rect x="1010" y="987" width="330" height="202" rx="6" fill="#edf5f0" stroke="#b8d2c2"/>
+<text x="1028" y="1012" class="step">本次每个 Worker 的实测结果</text>
+<text x="1028" y="1038" class="metric">1 轮 → 5 facts + 3 citations</text>
+<text x="1028" y="1062" class="body">stop_reason = evidence_sufficient</text>
+<text x="1028" y="1086" class="small">task_1、task_2 完成后：</text>
+<text x="1028" y="1107" class="body">第 2 波：task_3 + task_4</text>
+<text x="1028" y="1131" class="small">第二波同样各运行 1 轮并完成</text>
+<text x="1028" y="1158" class="metric">累计：20 facts · 12 citations</text>
+<text x="1028" y="1178" class="small">4 tasks 全部 completed</text>
+<line x1="610" y1="1190" x2="610" y2="1217" class="flow"/>
+
+<text x="48" y="1244" class="body">Collector + Supervisor</text><text x="48" y="1263" class="mono">graph/builder.py</text>
+<circle cx="256" cy="1241" r="15" fill="#426978"/><text x="256" y="1246" text-anchor="middle" class="num">9</text>
+<rect x="285" y="1216" width="650" height="62" rx="6" class="node blue"/>
+<text x="305" y="1240" class="step">Reducer 确定性合并并回到 Supervisor</text>
+<text x="305" y="1262" class="body">facts/citations 按 ID 去重排序；终态任务不可复活；completed 优先</text>
+<rect x="1010" y="1217" width="330" height="60" rx="6" fill="#eef2f7" stroke="#c8d1df"/>
+<text x="1028" y="1240" class="body">第 1 波完成 → 解锁 task_3/4</text><text x="1028" y="1260" class="body">第 2 波完成 → goto replan</text>
+<line x1="610" y1="1278" x2="610" y2="1305" class="flow"/>
+
+<text x="48" y="1332" class="body">Replan Node</text><text x="48" y="1351" class="mono">graph/builder.py</text>
+<circle cx="256" cy="1329" r="15" fill="#426978"/><text x="256" y="1334" text-anchor="middle" class="num">10</text>
+<rect x="285" y="1304" width="650" height="62" rx="6" class="node blue"/>
+<text x="305" y="1328" class="step">判断是否存在证据缺口</text>
+<text x="305" y="1350" class="body">facts 足够或不能再 replan → Writer；否则追加 follow-up 并回 Supervisor</text>
+<rect x="1010" y="1305" width="330" height="60" rx="6" fill="#edf5f0" stroke="#b8d2c2"/>
+<text x="1028" y="1328" class="metric">本次：20 facts，直接通过</text><text x="1028" y="1348" class="small">replan_count = 0</text>
+<line x1="610" y1="1366" x2="610" y2="1393" class="flow"/>
+
+<text x="48" y="1420" class="body">Writer Node</text><text x="48" y="1439" class="mono">service/report_writer.py</text>
+<circle cx="256" cy="1417" r="15" fill="#426978"/><text x="256" y="1422" text-anchor="middle" class="num">11</text>
+<rect x="285" y="1392" width="650" height="58" rx="6" class="node blue"/>
+<text x="305" y="1416" class="step">LangGraph 内先生成初稿 Markdown</text>
+<text x="305" y="1438" class="body">query + merged facts + merged citations → report_markdown → END</text>
+<rect x="1010" y="1393" width="330" height="56" rx="6" fill="#eef2f7" stroke="#c8d1df"/>
+<text x="1028" y="1416" class="body">graph.ainvoke 返回最终 GraphState</text><text x="1028" y="1436" class="small">Runner 检查 facts/citations 非空</text>
+
+<!-- Phase 4 -->
+<rect x="30" y="1474" width="1340" height="34" fill="#8a6332"/><text x="50" y="1497" class="phase">阶段 4　独立引用复核与最终报告生成</text>
+
+<text x="48" y="1544" class="body">VerifiedReportBuilder</text><text x="48" y="1563" class="mono">service/verified_report.py</text>
+<circle cx="256" cy="1541" r="15" fill="#9a6a2f"/><text x="256" y="1546" text-anchor="middle" class="num">12</text>
+<rect x="285" y="1516" width="650" height="62" rx="6" class="node amber"/>
+<text x="305" y="1540" class="step">将每条 Fact 转成 Claim，并核对 citation_id 完整性</text>
+<text x="305" y="1562" class="body">每个事实对应一个声明；未知引用 ID 立即抛出 ToolError</text>
+<rect x="1010" y="1517" width="330" height="60" rx="6" fill="#fbf4e9" stroke="#dcc39d"/>
+<text x="1028" y="1540" class="body">本次：20 facts → 20 claims</text><text x="1028" y="1560" class="small">全部引用 ID 可解析</text>
+<line x1="610" y1="1578" x2="610" y2="1605" class="warnflow"/>
+
+<text x="48" y="1632" class="body">CitationVerifier</text><text x="48" y="1651" class="mono">service/verifier.py</text>
+<circle cx="256" cy="1629" r="15" fill="#9a6a2f"/><text x="256" y="1634" text-anchor="middle" class="num">13</text>
+<rect x="285" y="1604" width="650" height="88" rx="6" class="node amber"/>
+<text x="305" y="1628" class="step">逐 Claim 重新抓取来源，提取相关证据窗口并做 3-way NLI</text>
+<text x="305" y="1650" class="body">entailment → verified　|　contradiction → 丢弃　|　neutral → 降级为“有待确认”</text>
+<text x="305" y="1672" class="small">矛盾/中性声明仅允许一次 revision + re-verify；多来源冲突显式标记</text>
+<rect x="1010" y="1605" width="330" height="86" rx="6" fill="#edf5f0" stroke="#b8d2c2"/>
+<text x="1028" y="1630" class="metric">verified = 20</text><text x="1028" y="1652" class="body">contradicted = 0 · neutral = 0</text><text x="1028" y="1674" class="small">fake 模式使用确定性启发式 NLI</text>
+<line x1="610" y1="1692" x2="610" y2="1719" class="warnflow"/>
+
+<text x="48" y="1746" class="body">Report Renderer</text><text x="48" y="1765" class="mono">verified_report.py</text>
+<circle cx="256" cy="1743" r="15" fill="#9a6a2f"/><text x="256" y="1748" text-anchor="middle" class="num">14</text>
+<rect x="285" y="1718" width="650" height="64" rx="6" class="node amber"/>
+<text x="305" y="1742" class="step">计算验证指标，渲染最终 Markdown + 安全 HTML</text>
+<text x="305" y="1764" class="body">HTML 对文本转义；仅 http/https 引用可点击；fake 报告加醒目提示</text>
+<rect x="1010" y="1719" width="330" height="62" rx="6" fill="#edf5f0" stroke="#b8d2c2"/>
+<text x="1028" y="1742" class="metric">Precision 1.00 · Coverage 1.00</text><text x="1028" y="1762" class="small">Markdown 长度：3039 字符</text>
+
+<!-- Phase 5 -->
+<rect x="30" y="1806" width="1340" height="34" fill="#625f72"/><text x="50" y="1829" class="phase">阶段 5　任务完成、SSE 通知与报告展示</text>
+
+<text x="48" y="1876" class="body">Runner + TaskStore</text><text x="48" y="1895" class="mono">api/runner.py</text>
+<circle cx="256" cy="1873" r="15" fill="#625f72"/><text x="256" y="1878" text-anchor="middle" class="num">15</text>
+<rect x="285" y="1848" width="650" height="64" rx="6" class="node blue"/>
+<text x="305" y="1872" class="step">写回报告，status=completed，发送 done 事件</text>
+<text x="305" y="1894" class="mono">report_markdown / report_html / metrics → TaskRecord</text>
+<rect x="1010" y="1849" width="330" height="62" rx="6" fill="#edf5f0" stroke="#b8d2c2"/>
+<text x="1028" y="1872" class="metric">completed · 20 facts · 12 citations</text><text x="1028" y="1892" class="small">SSE 事件序列共 12 条</text>
+<line x1="610" y1="1912" x2="610" y2="1939" class="flow"/>
+
+<text x="48" y="1966" class="body">React ReportPage</text><text x="48" y="1985" class="mono">web/src/App.tsx</text>
+<circle cx="256" cy="1963" r="15" fill="#625f72"/><text x="256" y="1968" text-anchor="middle" class="num">16</text>
+<rect x="285" y="1938" width="650" height="64" rx="6" class="node blue"/>
+<text x="305" y="1962" class="step">收到 done 后关闭 SSE，跳转报告页并取回报告</text>
+<text x="305" y="1984" class="mono">GET /api/research/{task_id}/report → Markdown + HTML</text>
+<rect x="1010" y="1939" width="330" height="62" rx="6" fill="#edf5f0" stroke="#b8d2c2"/>
+<text x="1028" y="1962" class="metric">用户看到最终验证报告</text><text x="1028" y="1982" class="small">含指标、已验证声明、存疑项、限制与引用</text>
+
+<!-- Cross-cutting guards -->
+<rect x="54" y="2024" width="1292" height="44" rx="6" fill="#fff7f7" stroke="#d7a7a8" stroke-dasharray="6 4"/>
+<text x="75" y="2044" class="step" fill="#8d4244">全程失败 / 中断出口</text>
+<text x="250" y="2044" class="body">配置错误、60 秒超时、空 facts/citations、鉴权失败、连续失败、预算耗尽、输入过长、用户取消 → status=failed / cancelled / partial，并通过 SSE 发出 error/cancelled</text>
+<text x="75" y="2062" class="small">注：当前 API TaskStore 默认为单进程内存存储，服务重启会丢失运行中任务；SSE 采用 100ms 轮询事件列表。</text>
+
+<!-- Footer summary -->
+<rect x="30" y="2094" width="1340" height="74" fill="#f3f5f7" stroke="#d9dde2"/>
+<text x="54" y="2118" class="step">本次模拟的真实路径摘要</text>
+<text x="54" y="2142" class="body">POST Query → queued/running → 4 个 SubTask（2 波并行）→ 每任务 1 轮 Search/Fetch/Extract/Reflect → 20 Facts + 12 Citations → 无 Replan → 20/20 Claims 通过复核 → completed</text>
+<text x="54" y="2162" class="small">数据来自项目默认 fake 模式的一次实际执行；它验证的是程序路径与状态流，不代表 LangGraph / LlamaIndex 的真实调研结论。</text>
+</svg>
+</div>
+</html>

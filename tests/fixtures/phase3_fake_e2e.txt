@@ -1,0 +1,28 @@
+﻿=== subtasks ===
+  task_1 completed | 2 facts / 1 sources after 3 rounds (search_round_limit).
+  task_2 completed | 2 facts / 1 sources after 3 rounds (search_round_limit).
+=== facts === 4
+  f1_task_1_r1 [task_1] LangGraph models agents as a graph of nodes with typed state.
+  f2_task_1_r1 [task_1] It supports checkpoints and human-in-the-loop.
+  f1_task_2_r0 [task_2] LangGraph models agents as a graph of nodes with typed state.
+  f2_task_2_r0 [task_2] It supports checkpoints and human-in-the-loop.
+=== citations === 2
+=== report ===
+# 调研报告：LangGraph architecture
+
+- 事实条数：4
+- 引用来源数：2
+
+## 要点
+
+- LangGraph models agents as a graph of nodes with typed state. [c_task_1_1]
+- It supports checkpoints and human-in-the-loop. [c_task_1_1]
+- LangGraph models agents as a graph of nodes with typed state. [c_task_2_1]
+- It supports checkpoints and human-in-the-loop. [c_task_2_1]
+
+## 引用
+
+- [c_task_1_1] https://example.com/langgraph — https://example.com/langgraph
+- [c_task_2_1] https://example.com/langgraph — https://example.com/langgraph
+
+=== searches made === 6

@@ -1,0 +1,412 @@
+<html style="margin:0;padding:0;">
+<title>TechResearch Agent 整体架构图</title>
+<div style="width:100%;box-sizing:border-box;background:#ffffff;font-family:'Segoe UI','Microsoft YaHei',sans-serif;padding:16px;">
+<svg viewBox="0 0 1240 1380" width="100%" xmlns="http://www.w3.org/2000/svg" style="display:block;">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#059669"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#D97706"/>
+    </marker>
+    <filter id="shadow" x="-2%" y="-2%" width="104%" height="104%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#000" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <!-- ===== 标题 ===== -->
+  <text x="620" y="36" text-anchor="middle" font-size="22" font-weight="700" fill="#0F172A">TechResearch Agent 整体架构图</text>
+  <text x="620" y="58" text-anchor="middle" font-size="12" fill="#64748B">基于 LangGraph Supervisor-Worker 模式 · 7 层分层架构 · 数据自上而下流动</text>
+
+  <!-- ===== 层背景色定义（极浅） ===== -->
+  <!-- 接入层 -->
+  <rect x="10" y="72" width="1220" height="82" rx="8" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+  <!-- 编排层 -->
+  <rect x="10" y="166" width="1220" height="178" rx="8" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="1"/>
+  <!-- Agent层 -->
+  <rect x="10" y="356" width="1220" height="106" rx="8" fill="#FFFBEB" stroke="#FDE68A" stroke-width="1"/>
+  <!-- 服务层 -->
+  <rect x="10" y="474" width="1220" height="138" rx="8" fill="#FEF2F2" stroke="#FECACA" stroke-width="1"/>
+  <!-- 工具层 -->
+  <rect x="10" y="624" width="1220" height="82" rx="8" fill="#ECFEFF" stroke="#A5F3FC" stroke-width="1"/>
+  <!-- 核心层 -->
+  <rect x="10" y="718" width="1220" height="112" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+  <!-- 领域层 -->
+  <rect x="10" y="842" width="1220" height="74" rx="8" fill="#F5F3FF" stroke="#DDD6FE" stroke-width="1"/>
+  <!-- 横向支撑 -->
+  <rect x="10" y="928" width="1220" height="74" rx="8" fill="#F9FAFB" stroke="#E5E7EB" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <!-- ===== 层标签 ===== -->
+  <g font-size="13" font-weight="700">
+    <text x="28" y="118" fill="#2563EB">接入层</text>
+    <text x="28" y="200" fill="#059669">编排层</text>
+    <text x="28" y="218" fill="#059669" font-size="10" font-weight="400">LangGraph</text>
+    <text x="28" y="416" fill="#D97706">Agent 层</text>
+    <text x="28" y="548" fill="#DC2626">服务层</text>
+    <text x="28" y="670" fill="#0891B2">工具层</text>
+    <text x="28" y="782" fill="#475569">核心层</text>
+    <text x="28" y="886" fill="#7C3AED">领域层</text>
+    <text x="28" y="972" fill="#6B7280">横向支撑</text>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- 接入层模块 -->
+  <!-- ============================================================ -->
+  <g font-size="12" filter="url(#shadow)">
+    <rect x="130" y="88" width="220" height="50" rx="6" fill="#fff" stroke="#3B82F6" stroke-width="1.5"/>
+    <text x="240" y="110" text-anchor="middle" font-weight="600" fill="#1E40AF">React Web UI</text>
+    <text x="240" y="126" text-anchor="middle" font-size="10" fill="#64748B">web/src/App.tsx</text>
+
+    <rect x="370" y="88" width="260" height="50" rx="6" fill="#fff" stroke="#3B82F6" stroke-width="1.5"/>
+    <text x="500" y="110" text-anchor="middle" font-weight="600" fill="#1E40AF">FastAPI · REST + SSE</text>
+    <text x="500" y="126" text-anchor="middle" font-size="10" fill="#64748B">src/api/main.py · runner.py · task_store.py</text>
+
+    <rect x="650" y="88" width="200" height="50" rx="6" fill="#fff" stroke="#3B82F6" stroke-width="1.5"/>
+    <text x="750" y="110" text-anchor="middle" font-weight="600" fill="#1E40AF">CLI Doctor</text>
+    <text x="750" y="126" text-anchor="middle" font-size="10" fill="#64748B">src/cli/doctor.py</text>
+
+    <rect x="870" y="88" width="240" height="50" rx="6" fill="#fff" stroke="#3B82F6" stroke-width="1.5"/>
+    <text x="990" y="110" text-anchor="middle" font-weight="600" fill="#1E40AF">API 端点</text>
+    <text x="990" y="126" text-anchor="middle" font-size="10" fill="#64748B">/research · /stream · /report · /cancel · /health</text>
+  </g>
+
+  <!-- 接入层 → 编排层 箭头 -->
+  <line x1="620" y1="154" x2="620" y2="166" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ============================================================ -->
+  <!-- 编排层：Graph 流程图 -->
+  <!-- ============================================================ -->
+  <g font-size="11" filter="url(#shadow)">
+    <!-- START -->
+    <rect x="130" y="186" width="56" height="34" rx="17" fill="#059669" stroke="#047857" stroke-width="1.5"/>
+    <text x="158" y="207" text-anchor="middle" font-weight="600" fill="#fff">START</text>
+
+    <!-- Planner -->
+    <rect x="206" y="186" width="90" height="34" rx="5" fill="#fff" stroke="#059669" stroke-width="1.5"/>
+    <text x="251" y="207" text-anchor="middle" font-weight="600" fill="#065F46">Planner</text>
+
+    <!-- Supervisor -->
+    <rect x="316" y="186" width="100" height="34" rx="5" fill="#fff" stroke="#059669" stroke-width="1.5"/>
+    <text x="366" y="207" text-anchor="middle" font-weight="600" fill="#065F46">Supervisor</text>
+
+    <!-- Worker 池（3个并行） -->
+    <rect x="446" y="178" width="130" height="50" rx="5" fill="#fff" stroke="#059669" stroke-width="1.5" stroke-dasharray="3,2"/>
+    <text x="511" y="194" text-anchor="middle" font-size="10" font-weight="600" fill="#065F46">Worker 池 (并行 ≤3)</text>
+    <rect x="454" y="200" width="36" height="22" rx="3" fill="#D1FAE5" stroke="#059669" stroke-width="0.8"/>
+    <text x="472" y="215" text-anchor="middle" font-size="9" fill="#065F46">W1</text>
+    <rect x="494" y="200" width="36" height="22" rx="3" fill="#D1FAE5" stroke="#059669" stroke-width="0.8"/>
+    <text x="512" y="215" text-anchor="middle" font-size="9" fill="#065F46">W2</text>
+    <rect x="534" y="200" width="36" height="22" rx="3" fill="#D1FAE5" stroke="#059669" stroke-width="0.8"/>
+    <text x="552" y="215" text-anchor="middle" font-size="9" fill="#065F46">W3</text>
+
+    <!-- Collector -->
+    <rect x="606" y="186" width="90" height="34" rx="5" fill="#fff" stroke="#059669" stroke-width="1.5"/>
+    <text x="651" y="207" text-anchor="middle" font-weight="600" fill="#065F46">Collector</text>
+
+    <!-- Replan -->
+    <rect x="726" y="186" width="80" height="34" rx="5" fill="#fff" stroke="#059669" stroke-width="1.5"/>
+    <text x="766" y="207" text-anchor="middle" font-weight="600" fill="#065F46">Replan</text>
+
+    <!-- Writer -->
+    <rect x="836" y="186" width="80" height="34" rx="5" fill="#fff" stroke="#059669" stroke-width="1.5"/>
+    <text x="876" y="207" text-anchor="middle" font-weight="600" fill="#065F46">Writer</text>
+
+    <!-- END -->
+    <rect x="946" y="186" width="56" height="34" rx="17" fill="#059669" stroke="#047857" stroke-width="1.5"/>
+    <text x="974" y="207" text-anchor="middle" font-weight="600" fill="#fff">END</text>
+  </g>
+
+  <!-- 编排层主流程箭头 -->
+  <g stroke="#059669" stroke-width="1.5" fill="none">
+    <line x1="186" y1="203" x2="206" y2="203" marker-end="url(#arrowGreen)"/>
+    <line x1="296" y1="203" x2="316" y2="203" marker-end="url(#arrowGreen)"/>
+    <line x1="416" y1="203" x2="446" y2="203" marker-end="url(#arrowGreen)"/>
+    <line x1="576" y1="203" x2="606" y2="203" marker-end="url(#arrowGreen)"/>
+    <line x1="696" y1="203" x2="726" y2="203" marker-end="url(#arrowGreen)"/>
+    <line x1="806" y1="203" x2="836" y2="203" marker-end="url(#arrowGreen)"/>
+    <line x1="916" y1="203" x2="946" y2="203" marker-end="url(#arrowGreen)"/>
+  </g>
+
+  <!-- Collector → Supervisor 循环回边（还有任务时） -->
+  <path d="M651,220 L651,248 L366,248 L366,220" stroke="#D97706" stroke-width="1.5" fill="none" stroke-dasharray="5,3" marker-end="url(#arrowOrange)"/>
+  <text x="508" y="244" text-anchor="middle" font-size="10" fill="#D97706" font-weight="600">还有任务 → 循环调度</text>
+
+  <!-- Replan → Supervisor 回边（证据不足时） -->
+  <path d="M766,220 L766,268 L366,268 L366,220" stroke="#DC2626" stroke-width="1.5" fill="none" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+  <text x="566" y="264" text-anchor="middle" font-size="10" fill="#DC2626" font-weight="600">证据不足 / replan_count &lt; max → 追加 follow-up 任务</text>
+
+  <!-- 编排层底部说明：State + Reducers -->
+  <g font-size="11">
+    <rect x="130" y="286" width="980" height="44" rx="5" fill="#fff" stroke="#A7F3D0" stroke-width="1"/>
+    <text x="145" y="304" font-weight="600" fill="#065F46">GraphState (src/graph/state.py)</text>
+    <text x="145" y="320" font-size="10" fill="#475569">query · user_context · research_depth · subtasks[merge_subtasks] · facts[merge_facts] · citations[merge_citations] · errors[merge_errors] · report_markdown · replan_count</text>
+    <text x="900" y="304" font-size="10" fill="#64748B">Checkpointer: MemorySaver / AsyncSqliteSaver</text>
+    <text x="900" y="320" font-size="10" fill="#64748B">并发安全 Reducer · 终端状态锁 · completed 优先</text>
+  </g>
+
+  <!-- 编排层 → Agent层 箭头 -->
+  <line x1="620" y1="344" x2="620" y2="356" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ============================================================ -->
+  <!-- Agent 层模块 -->
+  <!-- ============================================================ -->
+  <g font-size="11" filter="url(#shadow)">
+    <rect x="130" y="372" width="168" height="74" rx="6" fill="#fff" stroke="#F59E0B" stroke-width="1.5"/>
+    <text x="214" y="394" text-anchor="middle" font-weight="600" fill="#92400E">Planner</text>
+    <text x="214" y="410" text-anchor="middle" font-size="10" fill="#64748B">启发式任务分解</text>
+    <text x="214" y="424" text-anchor="middle" font-size="10" fill="#64748B">decompose(query)</text>
+    <text x="214" y="438" text-anchor="middle" font-size="9" fill="#94A3B8">agents/planner.py</text>
+
+    <rect x="310" y="372" width="168" height="74" rx="6" fill="#fff" stroke="#F59E0B" stroke-width="1.5"/>
+    <text x="394" y="394" text-anchor="middle" font-weight="600" fill="#92400E">Supervisor</text>
+    <text x="394" y="410" text-anchor="middle" font-size="10" fill="#64748B">纯函数路由调度</text>
+    <text x="394" y="424" text-anchor="middle" font-size="10" fill="#64748B">decide_dispatch()</text>
+    <text x="394" y="438" text-anchor="middle" font-size="9" fill="#94A3B8">agents/supervisor.py</text>
+
+    <rect x="490" y="372" width="168" height="74" rx="6" fill="#fff" stroke="#F59E0B" stroke-width="1.5"/>
+    <text x="574" y="394" text-anchor="middle" font-weight="600" fill="#92400E">Worker</text>
+    <text x="574" y="410" text-anchor="middle" font-size="10" fill="#64748B">search→fetch→extract</text>
+    <text x="574" y="424" text-anchor="middle" font-size="10" fill="#64748B">→reflect 有界循环</text>
+    <text x="574" y="438" text-anchor="middle" font-size="9" fill="#94A3B8">agents/worker.py</text>
+
+    <rect x="670" y="372" width="168" height="74" rx="6" fill="#fff" stroke="#F59E0B" stroke-width="1.5"/>
+    <text x="754" y="394" text-anchor="middle" font-weight="600" fill="#92400E">Reflection</text>
+    <text x="754" y="410" text-anchor="middle" font-size="10" fill="#64748B">可观测信号纯决策</text>
+    <text x="754" y="424" text-anchor="middle" font-size="10" fill="#64748B">decide_reflection()</text>
+    <text x="754" y="438" text-anchor="middle" font-size="9" fill="#94A3B8">agents/reflection.py</text>
+
+    <rect x="850" y="372" width="148" height="74" rx="6" fill="#fff" stroke="#F59E0B" stroke-width="1.5"/>
+    <text x="924" y="394" text-anchor="middle" font-weight="600" fill="#92400E">Budget</text>
+    <text x="924" y="410" text-anchor="middle" font-size="10" fill="#64748B">token/轮次/replan</text>
+    <text x="924" y="424" text-anchor="middle" font-size="10" fill="#64748B">全有或全无预留</text>
+    <text x="924" y="438" text-anchor="middle" font-size="9" fill="#94A3B8">agents/budget.py</text>
+
+    <rect x="1010" y="372" width="130" height="74" rx="6" fill="#fff" stroke="#F59E0B" stroke-width="1.5"/>
+    <text x="1075" y="394" text-anchor="middle" font-weight="600" fill="#92400E">Errors</text>
+    <text x="1075" y="410" text-anchor="middle" font-size="10" fill="#64748B">错误分类+退避</text>
+    <text x="1075" y="424" text-anchor="middle" font-size="10" fill="#64748B">URL 脱敏</text>
+    <text x="1075" y="438" text-anchor="middle" font-size="9" fill="#94A3B8">agents/errors.py</text>
+  </g>
+
+  <!-- Agent层 → 服务层 箭头 -->
+  <line x1="620" y1="446" x2="620" y2="474" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ============================================================ -->
+  <!-- 服务层模块（两排） -->
+  <!-- ============================================================ -->
+  <g font-size="11" filter="url(#shadow)">
+    <!-- 上排 -->
+    <rect x="130" y="490" width="220" height="52" rx="6" fill="#fff" stroke="#EF4444" stroke-width="1.5"/>
+    <text x="240" y="510" text-anchor="middle" font-weight="600" fill="#991B1B">Extractor</text>
+    <text x="240" y="526" text-anchor="middle" font-size="10" fill="#64748B">Heuristic + LLM 事实提取</text>
+    <text x="240" y="538" text-anchor="middle" font-size="9" fill="#94A3B8">service/extractor.py</text>
+
+    <rect x="365" y="490" width="220" height="52" rx="6" fill="#fff" stroke="#EF4444" stroke-width="1.5"/>
+    <text x="475" y="510" text-anchor="middle" font-weight="600" fill="#991B1B">CitationVerifier</text>
+    <text x="475" y="526" text-anchor="middle" font-size="10" fill="#64748B">重抓引用 · 3-way NLI 校验</text>
+    <text x="475" y="538" text-anchor="middle" font-size="9" fill="#94A3B8">service/verifier.py</text>
+
+    <rect x="600" y="490" width="220" height="52" rx="6" fill="#fff" stroke="#EF4444" stroke-width="1.5"/>
+    <text x="710" y="510" text-anchor="middle" font-weight="600" fill="#991B1B">VerifiedReport</text>
+    <text x="710" y="526" text-anchor="middle" font-size="10" fill="#64748B">Markdown + 转义 HTML 报告</text>
+    <text x="710" y="538" text-anchor="middle" font-size="9" fill="#94A3B8">service/verified_report.py</text>
+
+    <rect x="835" y="490" width="220" height="52" rx="6" fill="#fff" stroke="#EF4444" stroke-width="1.5"/>
+    <text x="945" y="510" text-anchor="middle" font-weight="600" fill="#991B1B">ReportWriter</text>
+    <text x="945" y="526" text-anchor="middle" font-size="10" fill="#64748B">facts+citations → Markdown</text>
+    <text x="945" y="538" text-anchor="middle" font-size="9" fill="#94A3B8">service/report_writer.py</text>
+
+    <!-- 下排 -->
+    <rect x="130" y="552" width="220" height="48" rx="6" fill="#fff" stroke="#F87171" stroke-width="1.2"/>
+    <text x="240" y="572" text-anchor="middle" font-weight="600" fill="#991B1B">Retrieval</text>
+    <text x="240" y="588" text-anchor="middle" font-size="10" fill="#64748B">语义检索 · service/retrieval.py</text>
+
+    <rect x="365" y="552" width="220" height="48" rx="6" fill="#fff" stroke="#F87171" stroke-width="1.2"/>
+    <text x="475" y="572" text-anchor="middle" font-weight="600" fill="#991B1B">LongTermStore</text>
+    <text x="475" y="588" text-anchor="middle" font-size="10" fill="#64748B">长期记忆存储 · service/long_term_store.py</text>
+
+    <rect x="600" y="552" width="220" height="48" rx="6" fill="#fff" stroke="#F87171" stroke-width="1.2"/>
+    <text x="710" y="572" text-anchor="middle" font-weight="600" fill="#991B1B">Compression</text>
+    <text x="710" y="588" text-anchor="middle" font-size="10" fill="#64748B">上下文压缩 · service/compression.py</text>
+
+    <rect x="835" y="552" width="220" height="48" rx="6" fill="#fff" stroke="#F87171" stroke-width="1.2"/>
+    <text x="945" y="572" text-anchor="middle" font-weight="600" fill="#991B1B">Exporters (stub)</text>
+    <text x="945" y="588" text-anchor="middle" font-size="10" fill="#64748B">Feishu 导出 · service/exporters.py</text>
+  </g>
+
+  <!-- 服务层 → 工具层 箭头 -->
+  <line x1="620" y1="600" x2="620" y2="624" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ============================================================ -->
+  <!-- 工具层模块 -->
+  <!-- ============================================================ -->
+  <g font-size="11" filter="url(#shadow)">
+    <rect x="130" y="640" width="260" height="50" rx="6" fill="#fff" stroke="#06B6D4" stroke-width="1.5"/>
+    <text x="260" y="660" text-anchor="middle" font-weight="600" fill="#155E75">SearchProviders</text>
+    <text x="260" y="676" text-anchor="middle" font-size="10" fill="#64748B">Tavily (live) / FakeSearchProvider (offline)</text>
+    <text x="260" y="688" text-anchor="middle" font-size="9" fill="#94A3B8">tools/search_providers.py</text>
+
+    <rect x="410" y="640" width="240" height="50" rx="6" fill="#fff" stroke="#06B6D4" stroke-width="1.5"/>
+    <text x="530" y="660" text-anchor="middle" font-weight="600" fill="#155E75">Fetchers</text>
+    <text x="530" y="676" text-anchor="middle" font-size="10" fill="#64748B">网页抓取 · trafilatura 解析</text>
+    <text x="530" y="688" text-anchor="middle" font-size="9" fill="#94A3B8">tools/fetchers.py · netutil.py</text>
+
+    <rect x="670" y="640" width="220" height="50" rx="6" fill="#fff" stroke="#06B6D4" stroke-width="1.5"/>
+    <text x="780" y="660" text-anchor="middle" font-weight="600" fill="#155E75">PaperProviders</text>
+    <text x="780" y="676" text-anchor="middle" font-size="10" fill="#64748B">学术论文源接入</text>
+    <text x="780" y="688" text-anchor="middle" font-size="9" fill="#94A3B8">tools/paper_providers.py</text>
+
+    <rect x="910" y="640" width="200" height="50" rx="6" fill="#fff" stroke="#06B6D4" stroke-width="1.5"/>
+    <text x="1010" y="660" text-anchor="middle" font-weight="600" fill="#155E75">Protocols</text>
+    <text x="1010" y="676" text-anchor="middle" font-size="10" fill="#64748B">Search/Fetcher 协议定义</text>
+    <text x="1010" y="688" text-anchor="middle" font-size="9" fill="#94A3B8">tools/protocols.py</text>
+  </g>
+
+  <!-- 工具层 → 核心层 箭头 -->
+  <line x1="620" y1="690" x2="620" y2="718" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ============================================================ -->
+  <!-- 核心层模块 -->
+  <!-- ============================================================ -->
+  <g font-size="11" filter="url(#shadow)">
+    <rect x="130" y="734" width="240" height="82" rx="6" fill="#fff" stroke="#64748B" stroke-width="1.5"/>
+    <text x="250" y="756" text-anchor="middle" font-weight="600" fill="#1E293B">LLM Providers</text>
+    <text x="250" y="774" text-anchor="middle" font-size="10" fill="#64748B">QwenProvider (DashScope)</text>
+    <text x="250" y="788" text-anchor="middle" font-size="10" fill="#64748B">FakeProvider (offline test)</text>
+    <text x="250" y="802" text-anchor="middle" font-size="10" fill="#64748B">BaseLLMProvider 抽象</text>
+    <text x="250" y="814" text-anchor="middle" font-size="9" fill="#94A3B8">core/providers/</text>
+
+    <rect x="390" y="734" width="220" height="82" rx="6" fill="#fff" stroke="#64748B" stroke-width="1.5"/>
+    <text x="500" y="756" text-anchor="middle" font-weight="600" fill="#1E293B">Prompt Hub</text>
+    <text x="500" y="774" text-anchor="middle" font-size="10" fill="#64748B">本地 manifest 管理</text>
+    <text x="500" y="788" text-anchor="middle" font-size="10" fill="#64748B">LangSmith 同步</text>
+    <text x="500" y="802" text-anchor="middle" font-size="10" fill="#64748B">PromptRegistry 注册表</text>
+    <text x="500" y="814" text-anchor="middle" font-size="9" fill="#94A3B8">core/prompts/</text>
+
+    <rect x="630" y="734" width="160" height="82" rx="6" fill="#fff" stroke="#64748B" stroke-width="1.5"/>
+    <text x="710" y="756" text-anchor="middle" font-weight="600" fill="#1E293B">Config</text>
+    <text x="710" y="774" text-anchor="middle" font-size="10" fill="#64748B">pydantic-settings</text>
+    <text x="710" y="788" text-anchor="middle" font-size="10" fill="#64748B">.env 加载</text>
+    <text x="710" y="802" text-anchor="middle" font-size="10" fill="#64748B">CORS / model 配置</text>
+    <text x="710" y="814" text-anchor="middle" font-size="9" fill="#94A3B8">core/config.py</text>
+
+    <rect x="810" y="734" width="170" height="82" rx="6" fill="#fff" stroke="#64748B" stroke-width="1.5"/>
+    <text x="895" y="756" text-anchor="middle" font-weight="600" fill="#1E293B">Tracing</text>
+    <text x="895" y="774" text-anchor="middle" font-size="10" fill="#64748B">LangSmith 适配</text>
+    <text x="895" y="788" text-anchor="middle" font-size="10" fill="#64748B">TracingContext</text>
+    <text x="895" y="802" text-anchor="middle" font-size="10" fill="#64748B">env-only 开关</text>
+    <text x="895" y="814" text-anchor="middle" font-size="9" fill="#94A3B8">core/tracing.py</text>
+
+    <rect x="1000" y="734" width="170" height="82" rx="6" fill="#fff" stroke="#64748B" stroke-width="1.5"/>
+    <text x="1085" y="756" text-anchor="middle" font-weight="600" fill="#1E293B">基础设施</text>
+    <text x="1085" y="774" text-anchor="middle" font-size="10" fill="#64748B">Logging 配置</text>
+    <text x="1085" y="788" text-anchor="middle" font-size="10" fill="#64748B">Correlation ID</text>
+    <text x="1085" y="802" text-anchor="middle" font-size="10" fill="#64748B">TRA 异常体系</text>
+    <text x="1085" y="814" text-anchor="middle" font-size="9" fill="#94A3B8">logging.py · correlation.py</text>
+  </g>
+
+  <!-- 核心层 → 领域层 箭头 -->
+  <line x1="620" y1="816" x2="620" y2="842" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ============================================================ -->
+  <!-- 领域层模块 -->
+  <!-- ============================================================ -->
+  <g font-size="11" filter="url(#shadow)">
+    <rect x="130" y="856" width="500" height="46" rx="6" fill="#fff" stroke="#8B5CF6" stroke-width="1.5"/>
+    <text x="380" y="876" text-anchor="middle" font-weight="600" fill="#5B21B6">Domain Models</text>
+    <text x="380" y="892" text-anchor="middle" font-size="10" fill="#64748B">Fact · Citation · SourceDocument · SourceKind · ResearchDepth</text>
+    <text x="380" y="904" text-anchor="middle" font-size="9" fill="#94A3B8">domain/models.py</text>
+
+    <rect x="650" y="856" width="500" height="46" rx="6" fill="#fff" stroke="#8B5CF6" stroke-width="1.5"/>
+    <text x="900" y="876" text-anchor="middle" font-weight="600" fill="#5B21B6">Verification Domain</text>
+    <text x="900" y="892" text-anchor="middle" font-size="10" fill="#64748B">Claim · Verdict (entail/contradict/neutral) · VerificationEvidence · VerificationResult</text>
+    <text x="900" y="904" text-anchor="middle" font-size="9" fill="#94A3B8">domain/verification.py</text>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- 横向支撑模块 -->
+  <!-- ============================================================ -->
+  <g font-size="11" filter="url(#shadow)">
+    <rect x="130" y="942" width="340" height="46" rx="6" fill="#fff" stroke="#9CA3AF" stroke-width="1.2" stroke-dasharray="4,2"/>
+    <text x="300" y="962" text-anchor="middle" font-weight="600" fill="#374151">Evals 评估框架</text>
+    <text x="300" y="978" text-anchor="middle" font-size="10" fill="#64748B">runner · metrics · baselines · adapter · charts · failures · configs</text>
+    <text x="300" y="990" text-anchor="middle" font-size="9" fill="#94A3B8">evals/ (offline, resumable, fixture-only)</text>
+
+    <rect x="490" y="942" width="340" height="46" rx="6" fill="#fff" stroke="#9CA3AF" stroke-width="1.2" stroke-dasharray="4,2"/>
+    <text x="660" y="962" text-anchor="middle" font-weight="600" fill="#374151">Tests 单元测试</text>
+    <text x="660" y="978" text-anchor="middle" font-size="10" fill="#64748B">125+ tests · acceptance stage01~04 · graph e2e · provider contract</text>
+    <text x="660" y="990" text-anchor="middle" font-size="9" fill="#94A3B8">tests/unit/ · tests/fixtures/</text>
+
+    <rect x="850" y="942" width="300" height="46" rx="6" fill="#fff" stroke="#9CA3AF" stroke-width="1.2" stroke-dasharray="4,2"/>
+    <text x="1000" y="962" text-anchor="middle" font-weight="600" fill="#374151">Checkpointer 持久化</text>
+    <text x="1000" y="978" text-anchor="middle" font-size="10" fill="#64748B">MemorySaver (in-memory) / AsyncSqliteSaver</text>
+    <text x="1000" y="990" text-anchor="middle" font-size="9" fill="#94A3B8">LangGraph checkpointer · 断点恢复</text>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- 底部：核心数据流说明 + 图例 -->
+  <!-- ============================================================ -->
+  <rect x="10" y="1020" width="1220" height="100" rx="8" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="30" y="1044" font-size="13" font-weight="700" fill="#0F172A">核心数据流</text>
+  <text x="30" y="1064" font-size="11" fill="#334155">
+    用户提问 → Planner 分解为 SubTask DAG → Supervisor 按依赖+优先级调度 ≤3 个并行 Worker →
+  </text>
+  <text x="30" y="1080" font-size="11" fill="#334155">
+    每个 Worker 执行 search→fetch→extract→reflect 有界循环，产出 facts/citations → Collector 合并结果 →
+  </text>
+  <text x="30" y="1096" font-size="11" fill="#334155">
+    全部完成后 Replan 判断证据是否充分（不足则追加 follow-up 任务，最多 max_replans 次）→ Writer 生成 Markdown → CitationVerifier 3-way NLI 校验 → VerifiedReport 输出
+  </text>
+  <text x="30" y="1112" font-size="11" fill="#334155">
+    全程 BudgetManager 管控 token/轮次/replan 预算，Reducer 保证并发合并确定性（终端状态锁、completed 优先、按 ID 排序）
+  </text>
+
+  <!-- 图例 -->
+  <rect x="10" y="1136" width="1220" height="56" rx="8" fill="#fff" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="30" y="1158" font-size="12" font-weight="700" fill="#0F172A">图例</text>
+
+  <g font-size="10" fill="#475569">
+    <rect x="90" y="1148" width="20" height="14" rx="3" fill="#fff" stroke="#3B82F6" stroke-width="1.5"/>
+    <text x="116" y="1159">接入层</text>
+
+    <rect x="170" y="1148" width="20" height="14" rx="3" fill="#fff" stroke="#059669" stroke-width="1.5"/>
+    <text x="196" y="1159">编排层 (LangGraph)</text>
+
+    <rect x="310" y="1148" width="20" height="14" rx="3" fill="#fff" stroke="#F59E0B" stroke-width="1.5"/>
+    <text x="336" y="1159">Agent 层</text>
+
+    <rect x="410" y="1148" width="20" height="14" rx="3" fill="#fff" stroke="#EF4444" stroke-width="1.5"/>
+    <text x="436" y="1159">服务层</text>
+
+    <rect x="490" y="1148" width="20" height="14" rx="3" fill="#fff" stroke="#06B6D4" stroke-width="1.5"/>
+    <text x="516" y="1159">工具层</text>
+
+    <rect x="570" y="1148" width="20" height="14" rx="3" fill="#fff" stroke="#64748B" stroke-width="1.5"/>
+    <text x="596" y="1159">核心层</text>
+
+    <rect x="650" y="1148" width="20" height="14" rx="3" fill="#fff" stroke="#8B5CF6" stroke-width="1.5"/>
+    <text x="676" y="1159">领域层</text>
+
+    <rect x="730" y="1148" width="20" height="14" rx="3" fill="#fff" stroke="#9CA3AF" stroke-width="1.2" stroke-dasharray="3,2"/>
+    <text x="756" y="1159">横向支撑</text>
+
+    <!-- 箭头图例 -->
+    <line x1="850" y1="1155" x2="880" y2="1155" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+    <text x="886" y="1159">主流程</text>
+
+    <line x1="940" y1="1155" x2="970" y2="1155" stroke="#D97706" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrowOrange)"/>
+    <text x="976" y="1159">调度循环</text>
+
+    <line x1="1040" y1="1155" x2="1070" y2="1155" stroke="#DC2626" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+    <text x="1076" y="1159">Replan 回边</text>
+  </g>
+
+  <!-- 底部标注 -->
+  <text x="620" y="1216" text-anchor="middle" font-size="10" fill="#94A3B8">基于源码 src/ 目录实际模块绘制 · 所有模块名称与文件路径均来自项目源码 · v0.6.0</text>
+
+</svg>
+</div>
+</html>
