@@ -57,6 +57,12 @@ from tools.search_providers import FakeSearchProvider
 # --- Pre-call length guard ---------------------------------------------------
 MAX_INPUT_CHARS = 120_000  # ~30k tokens at 4 chars/token; hard stop before LLM call
 
+# Tavily (and most search APIs) reject queries longer than ~1500 chars. The
+# planner embeds the FULL user question into each subtask description, which can
+# be 3000+ chars for DRB2 English tasks. Truncate to a safe bound before search;
+# the extractor still sees the full fetched page text, so no evidence is lost.
+MAX_SEARCH_QUERY_CHARS = 1400
+
 
 class InputTooLongError(RuntimeError):
     """Raised when accumulated input would exceed MAX_INPUT_CHARS before a call."""
@@ -320,10 +326,19 @@ class WorkerNode:
             seen_queries.append(current_query)
 
             # --- search span (interruptible) ---
+            # Truncate over-long search queries: Tavily rejects >1500 chars,
+            # and most search engines degrade on very long queries. The full
+            # question is still available to the extractor via fetched page text.
+            search_query = current_query
+            if len(search_query) > MAX_SEARCH_QUERY_CHARS:
+                search_query = search_query[:MAX_SEARCH_QUERY_CHARS].rsplit(" ", 1)[0]
+                errors.append(
+                    f"{task_id}:search_query_truncated from={len(current_query)} to={len(search_query)}"
+                )
             self._tracing.start_span("search", task_id=task_id, round=iteration)
             try:
                 hits, cancelled = await self._await_cancellable(
-                    self._web.search(current_query, max_results=self._max_results)
+                    self._web.search(search_query, max_results=self._max_results)
                 )
             except Exception as e:  # classify, don't crash
                 self._tracing.end_span("search", task_id=task_id, status="error", error=e)

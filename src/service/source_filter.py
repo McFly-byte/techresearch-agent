@@ -27,6 +27,22 @@ from domain.models import Citation, SearchResult
 # 4-digit number (e.g. 1000, 9999) to avoid false positives.
 _YEAR_RE = re.compile(r"(19[89]\d|20[0-4]\d)")
 
+# Unicode -> ASCII normalization for title matching. Search engines and publishers
+# often use curly apostrophes/quotes/hyphens, while the benchmark blocked titles
+# may use straight ASCII. Normalize both sides before substring comparison so a
+# blocked article on a mirror site (semanticscholar, etc.) is still caught.
+_UNICODE_FIXES = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"',
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2015": "-",
+    "\u00a0": " ", "\u200b": "", "\u200c": "", "\u200d": "", "\ufeff": "",
+})
+
+
+def _normalize_title(text: str) -> str:
+    """Lowercase + Unicode->ASCII normalize for blocked-title matching."""
+    return (text or "").strip().lower().translate(_UNICODE_FIXES)
+
 
 def _normalize_url_key(url: str) -> str:
     """Produce a comparison key for exact-URL blocking.
@@ -81,7 +97,7 @@ class SourcePolicy:
         # Pre-compute normalized keys once so every lookup is cheap.
         object.__setattr__(self, "_url_keys", [_normalize_url_key(u) for u in self.blocked_urls])
         object.__setattr__(self, "_domains", [d.lower() for d in self.blocked_domains if d])
-        object.__setattr__(self, "_titles", [t.lower() for t in self.blocked_titles if t])
+        object.__setattr__(self, "_titles", [_normalize_title(t) for t in self.blocked_titles if t])
         as_year: int | None = None
         if self.as_of_date and self.as_of_date.isdigit():
             as_year = int(self.as_of_date)
@@ -114,9 +130,9 @@ class SourcePolicy:
 
     def is_blocked_title(self, title: str) -> bool:
         """True if ``title`` overlaps a blocked article title (substring,
-        case-insensitive). Either direction is checked so truncated search
-        snippets still match."""
-        t = (title or "").strip().lower()
+        case-insensitive, Unicode-normalized). Either direction is checked so
+        truncated search snippets still match."""
+        t = _normalize_title(title)
         if not t:
             return False
         for blocked in self._titles:
