@@ -104,6 +104,13 @@ SCORE_BLOCKED = -1
 # 留足 reason 句与 JSON 结构的余量，避免 finish_reason=length 截断。
 _PER_RUBRIC_TOKENS = 300
 _BATCH_TOKENS_FLOOR = 500
+# 整题默认全局硬上限（秒）。109 rubrics / batch_size=12 = 9 批，串行最坏
+# 900s*9 ≈ 2.25h；2 路并发 + 30min 硬上限是质量优先但有界的折中。
+_DEFAULT_TOTAL_TIMEOUT = 1800.0
+# 批次并发上限：同时最多 2 个批次在飞，避免打爆 Qwen 限流。
+_BATCH_CONCURRENCY = 2
+# 单项缺失重试并发上限。
+_RETRY_CONCURRENCY = 3
 
 
 class LLMRubricJudge:
@@ -145,12 +152,18 @@ class LLMRubricJudge:
         timeout: float = _BATCH_TIMEOUT,
         max_retries: int = 2,
         batch_size: int = _BATCH_SIZE,
+        total_timeout: float = _DEFAULT_TOTAL_TIMEOUT,
+        batch_concurrency: int = _BATCH_CONCURRENCY,
+        retry_concurrency: int = _RETRY_CONCURRENCY,
     ) -> None:
         self._llm = llm
         self._registry = registry or get_default_registry()
         self._timeout = timeout
         self._max_retries = max_retries
         self._batch_size = batch_size
+        self._total_timeout = total_timeout
+        self._batch_concurrency = max(1, batch_concurrency)
+        self._retry_concurrency = max(1, retry_concurrency)
         # 本地模式下渲染系统提示零网络。
         self._sys = self._registry.render("eval_rubric_judge_batch_system").system_text()
         self.model_id = getattr(llm, "model_id", "")
@@ -161,6 +174,8 @@ class LLMRubricJudge:
         rubrics: list[str],
         blocked: list[str] | None = None,
         dimensions: list[str] | None = None,
+        *,
+        total_timeout: float | None = None,
     ) -> tuple[float, list[dict[str, object]], str]:
         """对一组 rubric 做三态批量评分。
 
@@ -169,7 +184,56 @@ class LLMRubricJudge:
             rubrics: 待评 rubric 文本列表。
             blocked: 被屏蔽/不适用的 rubric 文本列表（视为空列表当为 None）。
             dimensions: 与 ``rubrics`` 平行的维度标注列表（如 None 则不标注维度）。
+            total_timeout: 整题硬上限（秒），覆盖构造函数默认值。None 时用默认。
         """
+        deadline = total_timeout if total_timeout is not None else self._total_timeout
+        try:
+            return await asyncio.wait_for(
+                self._score_inner(answer, rubrics, blocked, dimensions),
+                timeout=deadline,
+            )
+        except TimeoutError:
+            # 全局超时：已完成的 rubric 保留分数，未完成项标记 judge_timeout。
+            # _score_inner 在被取消时 per_item 中已完成项有 score/reason，
+            # 未完成项保持初始 score=0/reason=""，这里统一标记为 judge_timeout。
+            return self._timeout_fallback(answer, rubrics, blocked, dimensions)
+
+    def _timeout_fallback(
+        self,
+        answer: str,
+        rubrics: list[str],
+        blocked: list[str] | None,
+        dimensions: list[str] | None,
+    ) -> tuple[float, list[dict[str, object]], str]:
+        """全局超时后的兜底：blocked 记 -1，其余全部记 0 + judge_timeout。"""
+        blocked_set = set(blocked or [])
+        dims = dimensions if dimensions is not None else [None] * len(rubrics)
+        per_item: list[dict[str, object]] = []
+        n_blocked = 0
+        for i, rubric in enumerate(rubrics):
+            dim = dims[i] if i < len(dims) else None
+            if rubric in blocked_set:
+                per_item.append(
+                    {"rubric": rubric, "score": SCORE_BLOCKED, "reason": "blocked", "dimension": dim}
+                )
+                n_blocked += 1
+            else:
+                per_item.append(
+                    {"rubric": rubric, "score": SCORE_FAIL, "reason": "judge_timeout", "dimension": dim}
+                )
+        live_scores = [SCORE_FAIL] * (len(rubrics) - n_blocked)
+        mean = sum(live_scores) / len(live_scores) if live_scores else 1.0
+        reason = f"0/{len(live_scores)} rubrics passed; {n_blocked} blocked; judge_timeout after {self._total_timeout:.0f}s"
+        return mean, per_item, reason
+
+    async def _score_inner(
+        self,
+        answer: str,
+        rubrics: list[str],
+        blocked: list[str] | None,
+        dimensions: list[str] | None,
+    ) -> tuple[float, list[dict[str, object]], str]:
+        """实际评分逻辑（被全局 wait_for 包裹）。批次并发 + 单项重试并发。"""
         blocked_set = set(blocked or [])
         dims = dimensions if dimensions is not None else [None] * len(rubrics)
 
@@ -190,35 +254,67 @@ class LLMRubricJudge:
         if not rubrics:
             return 1.0, [], "no rubrics to score"
 
-        # 分批调用 LLM，每批一次请求。
+        # 分批：每批 batch_size 条。
+        batches: list[list[tuple[int, str]]] = []
         for start in range(0, len(live), self._batch_size):
-            batch = live[start : start + self._batch_size]
+            batches.append(live[start : start + self._batch_size])
+
+        # 批次并发：Semaphore 限制同时在飞的批次数。
+        batch_sem = asyncio.Semaphore(self._batch_concurrency)
+        # batch_results[i] = {批内0基下标: (score, reason)}，按 batches 顺序。
+        batch_results: list[dict[int, tuple[int, str]]] = [{} for _ in batches]
+
+        async def _run_batch(batch_idx: int) -> None:
+            batch = batches[batch_idx]
             rubric_texts = [text for _idx, text in batch]
-            scored = await self._score_batch(answer, rubric_texts)
-            # 对本批缺失/损坏的项：单独重发该项一次（有界，不重发整批）。
-            for local_pos in range(len(rubric_texts)):
-                if local_pos in scored:
-                    continue
-                single = await self._score_single(answer, rubric_texts[local_pos])
-                if single is not None:
-                    scored[local_pos] = single
+            async with batch_sem:
+                scored = await self._score_batch(answer, rubric_texts)
+            batch_results[batch_idx] = scored
+
+        # 并发跑所有批次。
+        await asyncio.gather(*[_run_batch(i) for i in range(len(batches))])
+
+        # 收集缺失项，并发逐条重试。
+        retry_sem = asyncio.Semaphore(self._retry_concurrency)
+        missing: list[tuple[int, int, str]] = []  # (batch_idx, local_pos, rubric_text)
+        for batch_idx, batch in enumerate(batches):
+            scored = batch_results[batch_idx]
+            for local_pos, (_per_idx, text) in enumerate(batch):
+                if local_pos not in scored:
+                    missing.append((batch_idx, local_pos, text))
+
+        async def _retry_one(item: tuple[int, int, str]) -> None:
+            batch_idx, local_pos, rubric_text = item
+            async with retry_sem:
+                single = await self._score_single(answer, rubric_text)
+            if single is not None:
+                batch_results[batch_idx][local_pos] = single
+
+        if missing:
+            await asyncio.gather(*[_retry_one(m) for m in missing])
+
+        # 合并结果到 per_item（按原 rubric 顺序）。
+        for batch_idx, batch in enumerate(batches):
+            scored = batch_results[batch_idx]
             for local_pos, (per_idx, _text) in enumerate(batch):
                 if local_pos in scored:
                     val, why = scored[local_pos]
                 else:
-                    # 整批解析失败 / 缺该 index / 单项重试仍失败：按容错规则记 0。
                     val, why = SCORE_FAIL, "parse_error"
                 per_item[per_idx]["score"] = val
                 per_item[per_idx]["reason"] = why
 
-        # 均值：blocked 不计入分母。全部被屏蔽时无可评项，按 1.0 处理（与空 rubrics 一致）。
+        # 均值：blocked 不计入分母。
         live_scores = [
             s for p in per_item if isinstance(s := p["score"], int) and s != SCORE_BLOCKED
         ]
         n_pass = sum(1 for s in live_scores if s == SCORE_PASS)
         mean = sum(live_scores) / len(live_scores) if live_scores else 1.0
         n_blocked = sum(1 for p in per_item if p["score"] == SCORE_BLOCKED)
+        n_timeout = sum(1 for p in per_item if p.get("reason") == "judge_timeout")
         reason = f"{n_pass}/{len(live_scores)} rubrics passed; {n_blocked} blocked"
+        if n_timeout:
+            reason += f"; {n_timeout} timeout"
         return mean, per_item, reason
 
     async def _score_batch(

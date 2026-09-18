@@ -69,6 +69,12 @@ def main() -> None:
     default="llm",
     help="Scoring method. llm = LLM rubric judge (default); keyword = offline fallback.",
 )
+@click.option(
+    "--judge-timeout",
+    type=float,
+    default=1800.0,
+    help="Per-question LLM judge hard timeout in seconds (default 1800 = 30min).",
+)
 @click.option("--limit", type=int, default=None, help="Run only the first N questions.")
 @click.option(
     "--concurrency", type=int, default=1, help="Reserved: parallelism. Currently serial (1)."
@@ -106,6 +112,7 @@ def run(
     dataset: Path | None,
     mode: str,
     judge_kind: str,
+    judge_timeout: float,
     limit: int | None,
     concurrency: int,
     output_dir: Path | None,
@@ -212,6 +219,7 @@ def run(
         provider=provider,
         model=model,
         experiment_sink=None,  # experiment 模式走 sink.arun_experiment，不走内嵌钩子
+        judge_timeout=judge_timeout,
     )
 
     click.echo(

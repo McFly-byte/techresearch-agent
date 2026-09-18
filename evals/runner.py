@@ -351,6 +351,7 @@ class EvalRunner:
         provider: str = "unknown",
         model: str = "unknown",
         experiment_sink: Any | None = None,
+        judge_timeout: float | None = None,
     ) -> None:
         self._out = out_dir
         self._results_dir = out_dir / "results"
@@ -364,6 +365,7 @@ class EvalRunner:
         self._dataset_hash = dataset_hash
         self._provider = provider
         self._model = model
+        self._judge_timeout = judge_timeout
         # 可选的 LangSmith experiment 上传器（None 表示不上传）。
         self._experiment_sink = experiment_sink
 
@@ -427,7 +429,10 @@ class EvalRunner:
         kind = getattr(judge, "kind", "keyword")
         if kind == "llm":
             rubrics, dims, blocked = self._rubric_payload(q)
-            verdict = await judge.score(answer, rubrics, blocked=blocked, dimensions=dims)
+            verdict = await judge.score(
+                answer, rubrics, blocked=blocked, dimensions=dims,
+                total_timeout=self._judge_timeout,
+            )
             score, per_item, reason = verdict
             return score, reason, per_item
         # Offline keyword judge (sync).

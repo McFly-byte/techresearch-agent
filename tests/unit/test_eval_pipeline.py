@@ -485,3 +485,173 @@ def test_experiment_sink_disabled_when_dataset_missing():
 
     sink = _make_sink(_EmptyClient())
     assert sink.enabled is False
+
+
+# --- P8: Judge concurrency + global timeout ---------------------------------
+class _SlowBatchLLM:
+    """Mock LLM that sleeps per request, used to prove batch concurrency.
+
+    Each request sleeps ``delay`` seconds then returns a valid batch JSON.
+    Records concurrent call count via an asyncio-safe counter.
+    """
+
+    model_id = "slow-1"
+
+    def __init__(self, delay: float = 0.2) -> None:
+        self._delay = delay
+        self.requests: list[int] = []
+        self.max_concurrent = 0
+        self._active = 0
+        self._lock = __import__("asyncio").Lock()
+
+    async def acomplete(self, messages, *, model_id=None, max_tokens=None):  # type: ignore[no-untyped-def]
+        import asyncio
+
+        from core.providers.base import LLMResponse
+
+        async with self._lock:
+            self._active += 1
+            self.max_concurrent = max(self.max_concurrent, self._active)
+        try:
+            await asyncio.sleep(self._delay)
+        finally:
+            async with self._lock:
+                self._active -= 1
+        user = messages[-1].content
+        n = sum(1 for line in user.splitlines() if line.strip() and line.strip()[0].isdigit())
+        self.requests.append(n)
+        items = [{"index": i + 1, "score": 1, "reason": "ok"} for i in range(n)]
+        return LLMResponse(text=json.dumps(items), model="slow-1", provider="mock")
+
+
+class _HangingBatchLLM:
+    """Mock LLM that never returns (used to prove global timeout)."""
+
+    model_id = "hang-1"
+    requests: list[int] = []
+
+    async def acomplete(self, messages, *, model_id=None, max_tokens=None):  # type: ignore[no-untyped-def]
+        import asyncio
+        self.requests.append(1)
+        await asyncio.sleep(3600)  # never returns within test timeout
+
+
+def test_judge_batches_run_concurrently():
+    """2-way concurrency: 3 batches of 12 should take ~2x delay, not 3x."""
+    import asyncio
+    import time
+
+    llm = _SlowBatchLLM(delay=0.3)
+    judge = LLMRubricJudge(llm=llm, batch_size=12, batch_concurrency=2)
+    rubrics = [f"rubric {i}" for i in range(36)]  # 3 batches
+
+    t0 = time.monotonic()
+    mean, per_item, reason = asyncio.run(judge.score("answer", rubrics))
+    elapsed = time.monotonic() - t0
+
+    # 3 batches with concurrency=2: ~2 delays (0.6s), not 3 (0.9s)
+    assert elapsed < 0.85, f"expected concurrent ~0.6s, got {elapsed:.2f}s"
+    assert llm.max_concurrent >= 2, f"expected >=2 concurrent, got {llm.max_concurrent}"
+    assert len(per_item) == 36
+    assert all(p["score"] == 1 for p in per_item)
+    assert mean == 1.0
+
+
+def test_judge_global_timeout_marks_uncompleted():
+    """Global timeout: hanging LLM -> all live items marked judge_timeout, not parse_error."""
+    import asyncio
+
+    llm = _HangingBatchLLM()
+    judge = LLMRubricJudge(llm=llm, batch_size=12, total_timeout=1.0)
+    rubrics = [f"rubric {i}" for i in range(24)]
+
+    mean, per_item, reason = asyncio.run(judge.score("answer", rubrics, total_timeout=1.0))
+
+    assert len(per_item) == 24
+    # All live items should be judge_timeout, NOT parse_error
+    timeout_count = sum(1 for p in per_item if p["reason"] == "judge_timeout")
+    parse_error_count = sum(1 for p in per_item if p["reason"] == "parse_error")
+    assert timeout_count == 24, f"expected 24 judge_timeout, got {timeout_count}"
+    assert parse_error_count == 0, f"expected 0 parse_error, got {parse_error_count}"
+    assert "judge_timeout" in reason
+    assert mean == 0.0  # all failed
+
+
+def test_judge_timeout_preserves_blocked():
+    """Timeout fallback: blocked rubrics still get -1, live get judge_timeout."""
+    import asyncio
+
+    llm = _HangingBatchLLM()
+    judge = LLMRubricJudge(llm=llm, batch_size=12, total_timeout=0.5)
+    rubrics = ["r1", "r2", "r3", "r4"]
+    blocked = ["r2", "r4"]
+
+    mean, per_item, reason = asyncio.run(judge.score("answer", rubrics, blocked=blocked, total_timeout=0.5))
+
+    assert len(per_item) == 4
+    assert per_item[1]["score"] == -1 and per_item[1]["reason"] == "blocked"
+    assert per_item[3]["score"] == -1 and per_item[3]["reason"] == "blocked"
+    assert per_item[0]["reason"] == "judge_timeout"
+    assert per_item[2]["reason"] == "judge_timeout"
+    # mean excludes blocked: 2 live items both 0 -> mean 0.0
+    assert mean == 0.0
+
+
+def test_judge_concurrent_results_in_original_order():
+    """Concurrent batches: results must be merged in original rubric order."""
+    import asyncio
+
+    # Use variable delay based on batch content so batches complete out of order.
+    class _VarDelayLLM:
+        model_id = "var-1"
+        requests: list[int] = []
+
+        async def acomplete(self, messages, *, model_id=None, max_tokens=None):  # type: ignore[no-untyped-def]
+            import asyncio
+
+            from core.providers.base import LLMResponse
+
+            user = messages[-1].content
+            n = sum(1 for line in user.splitlines() if line.strip() and line.strip()[0].isdigit())
+            # Batch containing "rubric 0" = first batch (long delay),
+            # batch containing "rubric 12" = second batch (short delay).
+            is_first_batch = "rubric 0" in user
+            delay = 0.3 if is_first_batch else 0.05
+            score_val = 1 if is_first_batch else 0
+            batch_label = "batch1" if is_first_batch else "batch2"
+            await asyncio.sleep(delay)
+            items = [{"index": i + 1, "score": score_val, "reason": batch_label} for i in range(n)]
+            return LLMResponse(text=json.dumps(items), model="var-1", provider="mock")
+
+    llm = _VarDelayLLM()
+    judge = LLMRubricJudge(llm=llm, batch_size=12, batch_concurrency=2)
+    rubrics = [f"rubric {i}" for i in range(24)]  # 2 batches
+
+    mean, per_item, reason = asyncio.run(judge.score("answer", rubrics))
+
+    assert len(per_item) == 24
+    # First 12 (batch 1) should be score=1, last 12 (batch 2) score=0
+    assert all(p["score"] == 1 for p in per_item[:12])
+    assert all(p["score"] == 0 for p in per_item[12:])
+    # Reasons should reflect batch membership
+    assert all("batch1" in p["reason"] for p in per_item[:12])
+    assert all("batch2" in p["reason"] for p in per_item[12:])
+    # mean = 12*1 + 12*0 / 24 = 0.5
+    assert abs(mean - 0.5) < 0.01
+
+
+def test_judge_total_timeout_override_constructor():
+    """score(total_timeout=...) overrides constructor default."""
+    import asyncio
+    import time
+
+    llm = _HangingBatchLLM()
+    judge = LLMRubricJudge(llm=llm, batch_size=12, total_timeout=300.0)  # constructor default 5min
+
+    t0 = time.monotonic()
+    mean, per_item, reason = asyncio.run(judge.score("answer", ["r1"], total_timeout=0.5))
+    elapsed = time.monotonic() - t0
+
+    # Should use the 0.5s override, not the 300s constructor default
+    assert elapsed < 2.0, f"expected ~0.5s timeout, got {elapsed:.2f}s"
+    assert per_item[0]["reason"] == "judge_timeout"
