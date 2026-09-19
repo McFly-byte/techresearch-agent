@@ -20,7 +20,20 @@ def classify_failure(result: EvalResult) -> str:
     if result.status != "failed":
         return ""
     err = (result.error or "").lower()
-    if any(k in err for k in ("timeout", "timed out", "429", "rate limit", "5xx", "500")):
+    if any(
+        k in err
+        for k in (
+            "timeout",
+            "timed out",
+            "429",
+            "rate limit",
+            "5xx",
+            "500",
+            "providererror",
+            "provider_error",
+            "provider failure",
+        )
+    ):
         return "tool_failure"
     if any(k in err for k in ("fetch", "refetch", "citation", "url")):
         return "retrieval_failure"

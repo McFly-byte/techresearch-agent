@@ -75,6 +75,12 @@ def main() -> None:
     default=1800.0,
     help="Per-question LLM judge hard timeout in seconds (default 1800 = 30min).",
 )
+@click.option(
+    "--question-timeout",
+    type=click.FloatRange(min=0.0, min_open=True),
+    default=3600.0,
+    help="End-to-end wall-clock timeout per question in seconds (default 3600 = 1h).",
+)
 @click.option("--limit", type=int, default=None, help="Run only the first N questions.")
 @click.option(
     "--concurrency", type=int, default=1, help="Reserved: parallelism. Currently serial (1)."
@@ -113,6 +119,7 @@ def run(
     mode: str,
     judge_kind: str,
     judge_timeout: float,
+    question_timeout: float,
     limit: int | None,
     concurrency: int,
     output_dir: Path | None,
@@ -220,11 +227,12 @@ def run(
         model=model,
         experiment_sink=None,  # experiment 模式走 sink.arun_experiment，不走内嵌钩子
         judge_timeout=judge_timeout,
+        question_timeout=question_timeout,
     )
 
     click.echo(
         f"eval run: dataset={config_name} n={n_total} limit={limit} mode={mode} "
-        f"judge={judge_kind_resolved} out={out}"
+        f"judge={judge_kind_resolved} question_timeout={question_timeout:g}s out={out}"
     )
     import asyncio
 

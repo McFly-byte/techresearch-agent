@@ -23,7 +23,7 @@ from agents.budget import BudgetManager
 from agents.worker import ModelRouter, WorkerNode
 from api.task_store import TaskRecord, TaskStore
 from core.config import Settings
-from core.exceptions import ConfigurationError
+from core.exceptions import ConfigurationError, ProviderError
 from core.providers.factory import build_provider
 from core.providers.fake import FakeLLM
 from core.tracing import TracingContext, build_tracing, noop_tracing
@@ -433,6 +433,24 @@ class ResearchRunner:
             rec.status = "cancelled"
             rec.error = "cancelled"
             self._emit(rec, event_type="cancelled", stage="cancelled", data={})
+        except TimeoutError:
+            rec.status = "failed"
+            rec.error = f"research_timeout after {self._settings.research_timeout_seconds:g}s"
+            self._emit(
+                rec,
+                event_type="error",
+                stage="failed",
+                data={"message": rec.error},
+            )
+        except ProviderError as e:
+            rec.status = "failed"
+            rec.error = f"provider_error: {e}"
+            self._emit(
+                rec,
+                event_type="error",
+                stage="failed",
+                data={"message": rec.error},
+            )
         except Exception as e:  # noqa: BLE001
             rec.status = "failed"
             rec.error = str(e)

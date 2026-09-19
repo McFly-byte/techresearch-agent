@@ -289,7 +289,7 @@ class LangSmithExperimentSink:
 
         def record_judge(run: Any, example: Any) -> dict:
             """零计算 pass-through：把本地已算好的分数提升为官方 feedback。"""
-            out = (getattr(run, "outputs", None) or {})
+            out = getattr(run, "outputs", None) or {}
             detail = out.get("judge_detail", [])
             if not isinstance(detail, list):
                 detail = []
@@ -317,9 +317,7 @@ class LangSmithExperimentSink:
         url = await results.get_comparison_url()
         if url:
             (out / "experiment_url.txt").write_text(url + "\n", encoding="utf-8")
-        log.info(
-            "langsmith experiment 完成: %s -> %s", results.experiment_name, url
-        )
+        log.info("langsmith experiment 完成: %s -> %s", results.experiment_name, url)
 
         all_payloads = self._collect_results(runner, questions)
         runner._write_summary(all_payloads, start=start_time, end=time.time())
@@ -352,6 +350,7 @@ class EvalRunner:
         model: str = "unknown",
         experiment_sink: Any | None = None,
         judge_timeout: float | None = None,
+        question_timeout: float | None = None,
     ) -> None:
         self._out = out_dir
         self._results_dir = out_dir / "results"
@@ -366,6 +365,7 @@ class EvalRunner:
         self._provider = provider
         self._model = model
         self._judge_timeout = judge_timeout
+        self._question_timeout = question_timeout
         # 可选的 LangSmith experiment 上传器（None 表示不上传）。
         self._experiment_sink = experiment_sink
 
@@ -395,6 +395,8 @@ class EvalRunner:
             "prompt_commits": _prompt_commits(),
             "dataset_hash": self._dataset_hash,
             "start_time": datetime.fromtimestamp(start_time, tz=UTC).isoformat(),
+            "judge_timeout_seconds": self._judge_timeout,
+            "question_timeout_seconds": self._question_timeout,
         }
         (self._out / "config_snapshot.json").write_text(
             json.dumps(snap, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -430,7 +432,10 @@ class EvalRunner:
         if kind == "llm":
             rubrics, dims, blocked = self._rubric_payload(q)
             verdict = await judge.score(
-                answer, rubrics, blocked=blocked, dimensions=dims,
+                answer,
+                rubrics,
+                blocked=blocked,
+                dimensions=dims,
                 total_timeout=self._judge_timeout,
             )
             score, per_item, reason = verdict
@@ -438,6 +443,93 @@ class EvalRunner:
         # Offline keyword judge (sync).
         score, reason = judge.score(answer, q.required_keywords)
         return score, reason, []
+
+    async def _execute_one(self, q: EvalQuestion, *, started_at: float) -> EvalResult:
+        """Execute one question without failure isolation or persistence."""
+        prompt = EvalPrompt(
+            qid=q.qid,
+            question=q.question,
+            blocked_urls=list(q.blocked_urls),
+            blocked_domains=list(q.blocked_domains),
+            blocked_titles=list(q.blocked_titles),
+            as_of_date=q.as_of_date,
+        )
+        if self._answerer is None:
+            # Offline fixture answerer: NO reference-answer leak.
+            answer = f"Offline answer: {q.question}"
+            rounds = 1
+            tokens = 0
+            citations_list: list[dict] = []
+            quality_passed = True
+            usage_estimated = True
+        else:
+            assert callable(self._answerer)
+            raw: Any = self._answerer(prompt)
+            if inspect.isawaitable(raw):
+                raw = await raw
+            (
+                answer,
+                rounds,
+                tokens,
+                citations_list,
+                quality_passed,
+                usage_estimated,
+            ) = _unpack_answerer(raw)
+        if not quality_passed:
+            raise RuntimeError("report quality gate failed")
+        score, reason, per_item = await self._judge_answer(answer, q)
+        detail = json.dumps(per_item, ensure_ascii=False)
+        citation_urls = [
+            c.get("url", "") if isinstance(c, dict) else str(c) for c in citations_list
+        ]
+        return EvalResult(
+            qid=q.qid,
+            status="completed",
+            question=q.question,
+            answer=answer[:_MAX_STORED_ANSWER],
+            citations=citation_urls,
+            n_search_rounds=rounds,
+            tokens_estimated=tokens,
+            usage_estimated=usage_estimated,
+            latency_s=time.monotonic() - started_at,
+            judge_score=score,
+            judge_reason=reason,
+            judge_detail=detail,
+        )
+
+    async def _execute_one_bounded(self, q: EvalQuestion, *, started_at: float) -> EvalResult:
+        """Run one question with a true end-to-end wall-clock deadline.
+
+        The timeout covers research, report verification/synthesis and judging.
+        A separate timer task is used instead of ``wait_for`` so a child that
+        suppresses cancellation cannot turn the deadline into a generic error.
+        Both tasks are always cancelled and reaped before this method returns.
+        """
+        if self._question_timeout is None:
+            return await self._execute_one(q, started_at=started_at)
+
+        body = asyncio.create_task(
+            self._execute_one(q, started_at=started_at),
+            name=f"eval-question-{q.qid}",
+        )
+        deadline = asyncio.create_task(
+            asyncio.sleep(self._question_timeout),
+            name=f"eval-question-timeout-{q.qid}",
+        )
+        try:
+            done, _pending = await asyncio.wait(
+                {body, deadline}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if body in done:
+                return await body
+            body.cancel()
+            await asyncio.gather(body, return_exceptions=True)
+            raise TimeoutError(f"question_timeout after {self._question_timeout:g}s")
+        finally:
+            for task in (body, deadline):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(body, deadline, return_exceptions=True)
 
     async def _process_one(self, q: EvalQuestion) -> dict:
         """Process a single question end-to-end; NEVER raises (failure isolation).
@@ -451,69 +543,9 @@ class EvalRunner:
         it, so judge / writer / blocked-filtering logic lives in exactly one place.
         """
         t0 = time.monotonic()
-        per_item: list = []
         try:
-            # P0-4: answerer sees ONLY qid + question (+ source-constraint
-            # metadata that already lives in the prompt's **important**
-            # block). No reference_answer / rubrics.
-            prompt = EvalPrompt(
-                qid=q.qid,
-                question=q.question,
-                blocked_urls=list(q.blocked_urls),
-                blocked_domains=list(q.blocked_domains),
-                blocked_titles=list(q.blocked_titles),
-                as_of_date=q.as_of_date,
-            )
-            if self._answerer is None:
-                # Offline fixture answerer: NO reference-answer leak.
-                answer = f"Offline answer: {q.question}"
-                rounds = 1
-                tokens = 0
-                citations_list: list[dict] = []
-                quality_passed = True
-                usage_estimated = True
-            else:
-                assert callable(self._answerer)
-                raw: Any = self._answerer(prompt)
-                if inspect.isawaitable(raw):
-                    raw = await raw
-                (
-                    answer,
-                    rounds,
-                    tokens,
-                    citations_list,
-                    quality_passed,
-                    usage_estimated,
-                ) = _unpack_answerer(raw)
-            # Quality gate: a synthesis the production system flagged as
-            # failed does NOT reach the judge; the question is marked
-            # failed below by the raised exception.
-            if not quality_passed:
-                raise RuntimeError("report quality gate failed")
-            score, reason, per_item = await self._judge_answer(answer, q)
-            detail = json.dumps(per_item, ensure_ascii=False)
-            # EvalResult.citations holds the provenance URLs the answerer
-            # actually cited (post blocked/post-cutoff filtering).
-            citation_urls = [
-                c.get("url", "") if isinstance(c, dict) else str(c)
-                for c in citations_list
-            ]
-            res = EvalResult(
-                qid=q.qid,
-                status="completed",
-                question=q.question,
-                answer=answer[:_MAX_STORED_ANSWER],
-                citations=citation_urls,
-                n_search_rounds=rounds,
-                tokens_estimated=tokens,
-                usage_estimated=usage_estimated,
-                latency_s=time.monotonic() - t0,
-                judge_score=score,
-                judge_reason=reason,
-                judge_detail=detail,
-            )
+            res = await self._execute_one_bounded(q, started_at=t0)
         except Exception as e:  # single-question failure isolation
-            per_item = []
             res = EvalResult(
                 qid=q.qid,
                 status="failed",
@@ -573,9 +605,7 @@ class EvalRunner:
             # 可选：上传到 LangSmith Experiment（失败只记 warning，不阻塞）。
             # 注意：experiment 模式走 LangSmithExperimentSink.arun_experiment，
             # 这里仅保留对老式 sink 的兼容钩子。
-            if self._experiment_sink is not None and hasattr(
-                self._experiment_sink, "log_result"
-            ):
+            if self._experiment_sink is not None and hasattr(self._experiment_sink, "log_result"):
                 self._experiment_sink.log_result(
                     qid=q.qid,
                     question=q.question,

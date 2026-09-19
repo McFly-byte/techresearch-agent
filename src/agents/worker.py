@@ -218,23 +218,30 @@ class WorkerNode:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await coro_task
             return None, True
-        cancel_wait = asyncio.ensure_future(self._cancel.wait())
-        body = asyncio.ensure_future(coro)
-        done, _pending = await asyncio.wait(
-            {body, cancel_wait}, return_when=asyncio.FIRST_COMPLETED
-        )
-        if cancel_wait in done and body not in done:
-            body.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await body
-            cancel_wait.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await cancel_wait
-            return None, True
-        cancel_wait.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await cancel_wait
-        return await body, False
+        cancel_wait = asyncio.create_task(self._cancel.wait(), name="worker-cancel-wait")
+
+        async def run_body() -> Any:
+            return await coro
+
+        body: asyncio.Task[Any] = asyncio.create_task(run_body(), name="worker-cancellable-body")
+        try:
+            done, _pending = await asyncio.wait(
+                {body, cancel_wait}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if cancel_wait in done and body not in done:
+                body.cancel()
+                await asyncio.gather(body, return_exceptions=True)
+                return None, True
+            return await body, False
+        finally:
+            # An outer timeout cancels ``_await_cancellable`` itself.  Always
+            # reap both helper tasks in that path; otherwise Event.wait()
+            # survives until loop shutdown and emits "Task was destroyed but
+            # it is pending!".
+            for task in (body, cancel_wait):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(body, cancel_wait, return_exceptions=True)
 
     async def _extract(
         self,
@@ -380,8 +387,7 @@ class WorkerNode:
                 hits, n_blocked = self._policy.filter_search_hits(hits)
                 if n_blocked:
                     errors.append(
-                        f"{task_id}:blocked_sources_filtered n={n_blocked} "
-                        f"locator_policy=search"
+                        f"{task_id}:blocked_sources_filtered n={n_blocked} locator_policy=search"
                     )
 
             # --- fetch span (interruptible per URL) ---
@@ -394,9 +400,7 @@ class WorkerNode:
                 # the search filter, never fetch it and never cite it.
                 if self._policy.is_blocked_url(h.url) or self._policy.is_blocked_title(h.title):
                     seen_urls.add(h.url)
-                    errors.append(
-                        f"{task_id}:blocked_fetch_skipped locator={sanitize_url(h.url)}"
-                    )
+                    errors.append(f"{task_id}:blocked_fetch_skipped locator={sanitize_url(h.url)}")
                     continue
                 if h.url in seen_urls:
                     continue
