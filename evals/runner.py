@@ -22,14 +22,18 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import subprocess
 import time
+import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from core.deadlines import run_with_hard_timeout
 from core.prompts.manifest import load_lock
+from core.usage import capture_usage
 from evals.adapter import EvalPrompt, EvalQuestion, EvalResult
 from evals.configs import EvalConfig
 from evals.failures import classify_failure
@@ -133,6 +137,8 @@ class LangSmithExperimentSink:
         prompt_commits: dict[str, str] | None = None,
         git_commit: str = "",
         research_mode: str = "live",
+        concurrency: int = 1,
+        subset_metadata: dict[str, object] | None = None,
         client: Any | None = None,
     ) -> None:
         self._prefix = experiment_prefix
@@ -144,6 +150,8 @@ class LangSmithExperimentSink:
         self._prompt_commits = prompt_commits or {}
         self._git_commit = git_commit
         self._research_mode = research_mode
+        self._concurrency = max(1, int(concurrency))
+        self._subset_metadata = subset_metadata or {}
         self._enabled = False
         self._dataset_id: Any = None
         self._example_by_qid: dict[str, Any] = {}
@@ -208,7 +216,117 @@ class LangSmithExperimentSink:
             "git_commit": self._git_commit,
             "research_mode": self._research_mode,
             "official_judge": "not_run (requires GPT-5.5)",
+            "concurrency": self._concurrency,
+            "subset": self._subset_metadata,
         }
+
+    def _comparison_url(self, project: Any) -> str:
+        project_url = str(getattr(project, "url", "") or "").split("?")[0]
+        if not project_url:
+            return ""
+        base_url = project_url.split("/projects/p/")[0]
+        return f"{base_url}/datasets/{self._dataset_id}/compare?selectedSessions={project.id}"
+
+    def _load_or_create_experiment(
+        self, *, out: Path, qids: list[str], runner: Any
+    ) -> tuple[Any, dict[str, object]]:
+        """Persist and reuse one exact LangSmith Experiment across resumes."""
+        path = out / "experiment.json"
+        client = self._client
+        if client is None:
+            raise RuntimeError("LangSmith client is unavailable")
+        if path.is_file():
+            saved_manifest = json.loads(path.read_text(encoding="utf-8"))
+            if saved_manifest.get("dataset_hash") != self._dataset_hash:
+                raise ValueError("resume experiment dataset hash mismatch")
+            if saved_manifest.get("subset") != self._subset_metadata:
+                raise ValueError("resume experiment subset metadata mismatch")
+            project = client.read_project(project_id=str(saved_manifest["experiment_id"]))
+            self._experiment_name = str(saved_manifest["experiment_name"])
+            if saved_manifest.get("qids") != qids:
+                saved_manifest["qids"] = qids
+                runner._atomic_write_json(path, saved_manifest)
+            return project, saved_manifest
+
+        metadata = {**self._metadata(), "__ls_runner": "py_sdk_evaluate"}
+        project = client.create_project(
+            self._prefix,
+            description="DeepResearch Bench II evaluation",
+            reference_dataset_id=self._dataset_id,
+            metadata=metadata,
+            num_examples=len(qids),
+            num_repetitions=1,
+            evaluator_keys=["judge_score"],
+        )
+        self._experiment_name = str(project.name)
+        manifest: dict[str, object] = {
+            "schema_version": "1.0",
+            "experiment_name": self._experiment_name,
+            "experiment_id": str(project.id),
+            "experiment_url": self._comparison_url(project),
+            "dataset_name": self._dataset_name,
+            "dataset_id": str(self._dataset_id),
+            "dataset_hash": self._dataset_hash,
+            "subset": self._subset_metadata,
+            "qids": qids,
+            "git_commit": self._git_commit,
+            "prompt_commits": self._prompt_commits,
+            "provider": self._provider,
+            "model": self._model,
+            "judge": "qwen-nonofficial",
+            "official_judge": "not_run (requires GPT-5.5)",
+            "concurrency": self._concurrency,
+            "timeouts": {
+                "question_seconds": runner._question_timeout,
+                "judge_seconds": runner._judge_timeout,
+            },
+        }
+        runner._atomic_write_json(path, manifest)
+        self._configure_view_overrides()
+        return project, manifest
+
+    def _configure_view_overrides(self) -> None:
+        """Best-effort dataset view: show eval fields and hide cost columns."""
+        request = getattr(self._client, "request_with_retries", None)
+        if not callable(request):
+            return
+        path = f"/datasets/{self._dataset_id}/experiment-view-overrides"
+        desired = [
+            {"column": "outputs.qid", "hide": False},
+            {"column": "outputs.status", "hide": False},
+            {"column": "outputs.judge_score", "hide": False, "precision": 4},
+            {"column": "outputs.answer_latency_s", "hide": False, "precision": 2},
+            {"column": "outputs.judge_latency_s", "hide": False, "precision": 2},
+            {"column": "outputs.total_tokens", "hide": False},
+            {"column": "outputs.input_tokens", "hide": False},
+            {"column": "outputs.output_tokens", "hide": False},
+            {"column": "metrics.total_cost", "hide": True},
+            {"column": "metrics.prompt_cost", "hide": True},
+            {"column": "metrics.completion_cost", "hide": True},
+        ]
+        try:
+            response = request("GET", path)
+            existing: object = response.json() if response.status_code == 200 else None
+            if isinstance(existing, list) and existing:
+                current = existing[0]
+            elif isinstance(existing, dict) and existing.get("id"):
+                current = existing
+            else:
+                current = None
+            if isinstance(current, dict):
+                merged = {
+                    str(item.get("column")): item for item in current.get("column_overrides", [])
+                }
+                merged.update({str(item["column"]): item for item in desired})
+                request(
+                    "PATCH",
+                    f"{path}/{current['id']}",
+                    request_kwargs={"json": {"column_overrides": list(merged.values())}},
+                )
+            else:
+                request("POST", path, request_kwargs={"json": {"column_overrides": desired}})
+        except Exception as e:  # noqa: BLE001
+            log.warning("langsmith view override 配置失败（不影响评测）: %s", type(e).__name__)
 
     async def arun_experiment(
         self,
@@ -233,8 +351,8 @@ class LangSmithExperimentSink:
         done: dict[str, dict] = runner._load_done()
         ordered: list[EvalQuestion] = []
         skipped_no_example: list[str] = []
-        for q in questions:
-            if len(ordered) >= limit:
+        for index, q in enumerate(questions):
+            if index >= limit:
                 break
             if q.qid in done:
                 continue
@@ -255,8 +373,15 @@ class LangSmithExperimentSink:
 
         # 写 config 快照（与 EvalRunner.run 一致）。
         runner._write_snapshot(start_time=start_time)
+        selected_qids = [q.qid for q in questions]
+        project, experiment_manifest = self._load_or_create_experiment(
+            out=out, qids=selected_qids, runner=runner
+        )
+        self._experiment_name = str(experiment_manifest["experiment_name"])
 
         async def predict(inputs: dict) -> dict:
+            from langsmith.run_helpers import get_current_run_tree
+
             qid = str(inputs.get("qid", ""))
             q = q_by_id.get(qid)
             if q is None:
@@ -270,7 +395,30 @@ class LangSmithExperimentSink:
                     "latency_s": 0.0,
                     "tokens": 0,
                 }
+            root = get_current_run_tree()
+            if root is not None:
+                root.add_tags([qid, self._experiment_name])
+                root.add_metadata({"qid": qid, "language": q.language, "theme": q.theme})
             payload = await runner._process_one(q)
+            payload["experiment_name"] = self._experiment_name
+            payload["experiment_id"] = str(experiment_manifest["experiment_id"])
+            if root is not None:
+                payload["run_id"] = str(root.id)
+                payload["trace_id"] = str(root.trace_id)
+                try:
+                    if self._client is None:
+                        raise RuntimeError("LangSmith client is unavailable")
+                    payload["trace_url"] = self._client.get_run_url(run=root)
+                except Exception:  # noqa: BLE001
+                    payload["trace_url"] = ""
+                root.add_metadata(
+                    {
+                        "attempt": int(payload.get("attempt", 1)),
+                        "status": str(payload.get("status", "")),
+                        "failure_category": str(payload.get("failure_category", "")),
+                    }
+                )
+            runner._atomic_write_json(runner._state_path(qid), payload)
             detail_raw = payload.get("judge_detail", "")
             try:
                 detail_parsed: object = json.loads(detail_raw) if detail_raw else []
@@ -284,7 +432,24 @@ class LangSmithExperimentSink:
                 "judge_reason": str(payload.get("judge_reason", ""))[:500],
                 "judge_detail": detail_parsed,
                 "latency_s": float(payload.get("latency_s", 0.0) or 0.0),
-                "tokens": int(payload.get("tokens_estimated", 0) or 0),
+                "answer_latency_s": float(payload.get("answer_latency_s", 0.0) or 0.0),
+                "judge_latency_s": float(payload.get("judge_latency_s", 0.0) or 0.0),
+                "input_tokens": int(payload.get("input_tokens", 0) or 0),
+                "output_tokens": int(payload.get("output_tokens", 0) or 0),
+                "total_tokens": int(payload.get("total_tokens", 0) or 0),
+                "usage_by_stage": payload.get("usage_by_stage", {}),
+                "failure_category": str(payload.get("failure_category", "")),
+                "attempt": int(payload.get("attempt", 1)),
+                "language": q.language,
+                "theme": q.theme,
+                "run_id": str(payload.get("run_id", "")),
+                "trace_id": str(payload.get("trace_id", "")),
+                "trace_url": str(payload.get("trace_url", "")),
+                "usage_metadata": {
+                    "input_tokens": int(payload.get("input_tokens", 0) or 0),
+                    "output_tokens": int(payload.get("output_tokens", 0) or 0),
+                    "total_tokens": int(payload.get("total_tokens", 0) or 0),
+                },
             }
 
         def record_judge(run: Any, example: Any) -> dict:
@@ -308,8 +473,8 @@ class LangSmithExperimentSink:
             data=examples,
             evaluators=[record_judge],
             metadata=self._metadata(),
-            experiment_prefix=self._prefix,
-            max_concurrency=0,  # 0 = 串行，与原 runner 行为一致
+            experiment=project,
+            max_concurrency=self._concurrency,
             client=self._client,
             error_handling="log",
         )
@@ -351,6 +516,8 @@ class EvalRunner:
         experiment_sink: Any | None = None,
         judge_timeout: float | None = None,
         question_timeout: float | None = None,
+        concurrency: int = 1,
+        subset_metadata: dict[str, object] | None = None,
     ) -> None:
         self._out = out_dir
         self._results_dir = out_dir / "results"
@@ -366,11 +533,24 @@ class EvalRunner:
         self._model = model
         self._judge_timeout = judge_timeout
         self._question_timeout = question_timeout
+        self._concurrency = max(1, int(concurrency))
+        self._subset_metadata = subset_metadata or {}
         # 可选的 LangSmith experiment 上传器（None 表示不上传）。
         self._experiment_sink = experiment_sink
 
     def _state_path(self, qid: str) -> Path:
         return self._results_dir / f"{qid}.json"
+
+    @staticmethod
+    def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
 
     def _load_done(self) -> dict[str, dict]:
         """Load ONLY previously-completed questions (resume set).
@@ -397,10 +577,10 @@ class EvalRunner:
             "start_time": datetime.fromtimestamp(start_time, tz=UTC).isoformat(),
             "judge_timeout_seconds": self._judge_timeout,
             "question_timeout_seconds": self._question_timeout,
+            "concurrency": self._concurrency,
+            "subset": self._subset_metadata,
         }
-        (self._out / "config_snapshot.json").write_text(
-            json.dumps(snap, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        self._atomic_write_json(self._out / "config_snapshot.json", snap)
 
     @staticmethod
     def _rubric_payload(q: EvalQuestion) -> tuple[list[str], list[str] | None, list[str]]:
@@ -477,7 +657,10 @@ class EvalRunner:
             ) = _unpack_answerer(raw)
         if not quality_passed:
             raise RuntimeError("report quality gate failed")
+        answer_latency = time.monotonic() - started_at
+        judge_started = time.monotonic()
         score, reason, per_item = await self._judge_answer(answer, q)
+        judge_latency = time.monotonic() - judge_started
         detail = json.dumps(per_item, ensure_ascii=False)
         citation_urls = [
             c.get("url", "") if isinstance(c, dict) else str(c) for c in citations_list
@@ -492,6 +675,8 @@ class EvalRunner:
             tokens_estimated=tokens,
             usage_estimated=usage_estimated,
             latency_s=time.monotonic() - started_at,
+            answer_latency_s=answer_latency,
+            judge_latency_s=judge_latency,
             judge_score=score,
             judge_reason=reason,
             judge_detail=detail,
@@ -508,28 +693,12 @@ class EvalRunner:
         if self._question_timeout is None:
             return await self._execute_one(q, started_at=started_at)
 
-        body = asyncio.create_task(
+        return await run_with_hard_timeout(
             self._execute_one(q, started_at=started_at),
-            name=f"eval-question-{q.qid}",
+            timeout=self._question_timeout,
+            label="question_timeout",
+            cancel_grace=2.0,
         )
-        deadline = asyncio.create_task(
-            asyncio.sleep(self._question_timeout),
-            name=f"eval-question-timeout-{q.qid}",
-        )
-        try:
-            done, _pending = await asyncio.wait(
-                {body, deadline}, return_when=asyncio.FIRST_COMPLETED
-            )
-            if body in done:
-                return await body
-            body.cancel()
-            await asyncio.gather(body, return_exceptions=True)
-            raise TimeoutError(f"question_timeout after {self._question_timeout:g}s")
-        finally:
-            for task in (body, deadline):
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(body, deadline, return_exceptions=True)
 
     async def _process_one(self, q: EvalQuestion) -> dict:
         """Process a single question end-to-end; NEVER raises (failure isolation).
@@ -543,24 +712,46 @@ class EvalRunner:
         it, so judge / writer / blocked-filtering logic lives in exactly one place.
         """
         t0 = time.monotonic()
-        try:
-            res = await self._execute_one_bounded(q, started_at=t0)
-        except Exception as e:  # single-question failure isolation
-            res = EvalResult(
-                qid=q.qid,
-                status="failed",
-                question=q.question,
-                error=str(e),
-                latency_s=time.monotonic() - t0,
-                failure_category=classify_failure(
-                    EvalResult(qid=q.qid, status="failed", error=str(e))
-                ),
-            )
+        previous_attempt = 0
+        state_path = self._state_path(q.qid)
+        if state_path.is_file():
+            try:
+                previous_attempt = int(
+                    json.loads(state_path.read_text(encoding="utf-8")).get("attempt", 1)
+                )
+            except Exception:  # noqa: BLE001
+                previous_attempt = 0
+        with capture_usage(q.qid) as usage:
+            try:
+                res = await self._execute_one_bounded(q, started_at=t0)
+            except Exception as e:  # single-question failure isolation
+                res = EvalResult(
+                    qid=q.qid,
+                    status="failed",
+                    question=q.question,
+                    error=str(e),
+                    latency_s=time.monotonic() - t0,
+                    failure_category=classify_failure(
+                        EvalResult(qid=q.qid, status="failed", error=str(e))
+                    ),
+                )
+        usage_snapshot = usage.snapshot()
+        total_tokens = int(usage_snapshot["total_tokens"])
+        if total_tokens > 0:
+            res.input_tokens = int(usage_snapshot["input_tokens"])
+            res.output_tokens = int(usage_snapshot["output_tokens"])
+            res.total_tokens = total_tokens
+            res.tokens_estimated = total_tokens
+            res.usage_estimated = bool(usage_snapshot["estimated"])
+            res.usage_by_stage = {
+                stage: dict(values) for stage, values in usage_snapshot["by_stage"].items()
+            }
+        else:
+            res.total_tokens = res.tokens_estimated
+        res.attempt = previous_attempt + 1
         payload = asdict(res)
         # Flush immediately so a crash mid-run never loses a finished item.
-        self._state_path(q.qid).write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        self._atomic_write_json(self._state_path(q.qid), payload)
         return payload
 
     def _write_summary(self, results: list[dict], *, start: float, end: float) -> None:
@@ -584,9 +775,7 @@ class EvalRunner:
             "end_time": datetime.fromtimestamp(end, tz=UTC).isoformat(),
             "usage": {"total_tokens": total_tokens},
         }
-        (self._out / "summary.json").write_text(
-            json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        self._atomic_write_json(self._out / "summary.json", summary)
 
     async def run(self, *, max_questions: int | None = None) -> list[dict]:
         start = time.time()
@@ -594,14 +783,18 @@ class EvalRunner:
         done = self._load_done()
         limit = max_questions or self._config.max_questions_per_run
 
+        selected = self._questions[:limit]
+        pending = [q for q in selected if q.qid not in done]
+        semaphore = asyncio.Semaphore(self._concurrency)
+
+        async def process(q: EvalQuestion) -> tuple[str, dict]:
+            async with semaphore:
+                return q.qid, await self._process_one(q)
+
+        fresh = dict(await asyncio.gather(*(process(q) for q in pending))) if pending else {}
         results: list[dict] = []
-        for i, q in enumerate(self._questions):
-            if i >= limit:
-                break
-            if q.qid in done:
-                results.append(done[q.qid])
-                continue
-            payload = await self._process_one(q)
+        for q in selected:
+            payload = done.get(q.qid) or fresh[q.qid]
             # 可选：上传到 LangSmith Experiment（失败只记 warning，不阻塞）。
             # 注意：experiment 模式走 LangSmithExperimentSink.arun_experiment，
             # 这里仅保留对老式 sink 的兼容钩子。

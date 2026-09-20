@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from typing import Any
 
 from core.config import Settings
@@ -16,6 +17,19 @@ log = logging.getLogger(__name__)
 SEARCH_TIMEOUT_S = 10
 MAX_RETRIES = 1
 MAX_RESULT_CHARS = 4_000
+_GLOBAL_TAVILY_INFLIGHT = 4
+_LOOP_LIMITERS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _tavily_limiter() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    limiter = _LOOP_LIMITERS.get(loop)
+    if limiter is None:
+        limiter = asyncio.Semaphore(_GLOBAL_TAVILY_INFLIGHT)
+        _LOOP_LIMITERS[loop] = limiter
+    return limiter
 
 
 class TavilySearchProvider:
@@ -51,7 +65,8 @@ class TavilySearchProvider:
         last_exc: Exception | None = None
         for attempt in range(MAX_RETRIES + 1):
             try:
-                data = await asyncio.wait_for(asyncio.to_thread(_call), timeout=self._timeout)
+                async with _tavily_limiter():
+                    data = await asyncio.wait_for(asyncio.to_thread(_call), timeout=self._timeout)
                 break
             except TimeoutError as e:
                 last_exc = e

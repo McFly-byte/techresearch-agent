@@ -17,6 +17,7 @@ import contextlib
 import logging
 import time
 import uuid
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -214,13 +215,45 @@ class LangSmithTracing(TracingContext):
         self._project = project_name
         self._open: dict[tuple[str, str], str] = {}  # (stage, task_id) -> run_id
         self._start_times: dict[tuple[str, str], float] = {}
-        self._run_stack: list[str] = []  # active span run_ids, innermost last
+        self._run_stack: list[str] = []  # legacy top-level fallback only
+        self._active_tree: ContextVar[Any | None] = ContextVar(
+            f"langsmith_active_tree_{id(self)}", default=None
+        )
+        self._tree_open: dict[tuple[str, str], tuple[Any, Token[Any | None], float]] = {}
+
+    def _current_tree(self) -> Any | None:
+        active = self._active_tree.get()
+        if active is not None:
+            return active
+        try:
+            from langsmith.run_helpers import get_current_run_tree
+
+            return get_current_run_tree()
+        except Exception:  # noqa: BLE001 - tracing is best effort
+            return None
 
     def start_span(self, stage: str, *, task_id: str, **metadata: Any) -> SpanRecord:
         super().start_span(stage, task_id=task_id)
         safe = _redact_metadata(metadata)
         run_id = str(uuid.uuid4())
         key = (stage, task_id)
+        parent = self._current_tree()
+        if parent is not None and hasattr(parent, "create_child"):
+            try:
+                child = parent.create_child(
+                    stage,
+                    run_type="chain",
+                    run_id=run_id,
+                    inputs=safe,
+                    tags=[stage, task_id],
+                    extra={"metadata": {"task_id": task_id, "stage": stage}},
+                )
+                child.post()
+                token = self._active_tree.set(child)
+                self._tree_open[key] = (child, token, time.time())
+                return SpanRecord(action="start", stage=stage, task_id=task_id, metadata=safe)
+            except Exception as e:  # noqa: BLE001
+                log.warning("langsmith_child_run_start_failed error_type=%s", type(e).__name__)
         self._open[key] = run_id
         self._start_times[key] = time.time()
         self._run_stack.append(run_id)
@@ -247,13 +280,34 @@ class LangSmithTracing(TracingContext):
     ) -> SpanRecord:
         super().end_span(stage, task_id=task_id, status=status, error=error, **metadata)
         key = (stage, task_id)
+        tree_rec = self._tree_open.pop(key, None)
+        if tree_rec is not None:
+            child, token, start_ts = tree_rec
+            tree_outputs: dict[str, Any] = {
+                "status": status,
+                "duration": round(time.time() - start_ts, 4),
+            }
+            if error is not None:
+                tree_outputs["error_type"] = (
+                    type(error).__name__ if isinstance(error, Exception) else "error"
+                )
+            tree_outputs.update(_redact_metadata(metadata))
+            try:
+                child.end(outputs=tree_outputs, error=tree_outputs.get("error_type"))
+                child.patch()
+            except Exception as e:  # noqa: BLE001
+                log.warning("langsmith_child_run_end_failed error_type=%s", type(e).__name__)
+            finally:
+                with contextlib.suppress(Exception):
+                    self._active_tree.reset(token)
+            return SpanRecord(action="end", stage=stage, task_id=task_id, metadata=tree_outputs)
         run_id = self._open.pop(key, None)
-        start_ts = self._start_times.pop(key, None)
+        fallback_start_ts = self._start_times.pop(key) if key in self._start_times else None
         if run_id and run_id in self._run_stack:
             self._run_stack.remove(run_id)
         outputs: dict[str, Any] = {"status": status}
-        if start_ts is not None:
-            outputs["duration"] = round(time.time() - start_ts, 4)
+        if fallback_start_ts is not None:
+            outputs["duration"] = round(time.time() - fallback_start_ts, 4)
         if error is not None:
             # Only error type/class name, never the message body.
             outputs["error_type"] = (
@@ -304,6 +358,39 @@ class LangSmithTracing(TracingContext):
         """
         run_id = str(uuid.uuid4())
         start_ts = time.time()
+        parent_tree = self._current_tree()
+        if parent_tree is not None and hasattr(parent_tree, "create_child"):
+            child = None
+            token = None
+            try:
+                child = parent_tree.create_child(
+                    prompt_name,
+                    run_type="llm",
+                    run_id=run_id,
+                    inputs={},
+                    tags=[prompt_name, task_id] if task_id else [prompt_name],
+                    extra={
+                        "metadata": {
+                            "lc_hub_repo": prompt_name,
+                            "lc_hub_commit_hash": prompt_commit,
+                        }
+                    },
+                )
+                child.post()
+                token = self._active_tree.set(child)
+            except Exception as e:  # noqa: BLE001
+                log.warning("langsmith_llm_child_start_failed error_type=%s", type(e).__name__)
+            try:
+                yield
+            finally:
+                if child is not None:
+                    with contextlib.suppress(Exception):
+                        child.end(outputs={"status": "ok"})
+                        child.patch()
+                if token is not None:
+                    with contextlib.suppress(Exception):
+                        self._active_tree.reset(token)
+            return
         parent_id = self._run_stack[-1] if self._run_stack else None
         with contextlib.suppress(Exception):
             # NOTE: ``inputs`` is a REQUIRED positional of create_run; passing an

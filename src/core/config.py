@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     qwen_rerank_model: str = "qwen3-rerank"
     qwen_verifier_model: str = "qwen3.8-max"
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    qwen_request_timeout_seconds: float = 75.0
 
     # ---- Provider selection ------------------------------------------------
     # "auto" -> pick fake when no real key, else qwen.
@@ -77,7 +78,9 @@ class Settings(BaseSettings):
     tavily_api_key: SecretStr = Field(default=SecretStr(""))
 
     # ---- Research execution ------------------------------------------------
-    research_timeout_seconds: float = 600.0  # per-task wall-clock budget (real LLM calls can take 120s each)
+    research_timeout_seconds: float = (
+        600.0  # per-task wall-clock budget (real LLM calls can take 120s each)
+    )
 
     # ---- Feishu ------------------------------------------------------------
     feishu_app_id: str = ""
@@ -119,7 +122,7 @@ class Settings(BaseSettings):
             raise ValueError("ratio must be in (0, 1]")
         return v
 
-    @field_validator("research_timeout_seconds")
+    @field_validator("research_timeout_seconds", "qwen_request_timeout_seconds")
     @classmethod
     def _positive_research_timeout(cls, v: float) -> float:
         if v <= 0:

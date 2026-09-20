@@ -11,6 +11,7 @@ the harness runs a 3-question smoke slice.
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +29,7 @@ from evals.runner import (
     _git_commit,
     _prompt_commits,
 )
+from evals.subset import apply_subset, load_subset
 
 
 def _resolve_judge(kind: str):
@@ -72,18 +74,39 @@ def main() -> None:
 @click.option(
     "--judge-timeout",
     type=float,
-    default=1800.0,
-    help="Per-question LLM judge hard timeout in seconds (default 1800 = 30min).",
+    default=240.0,
+    help="Per-question LLM judge hard timeout in seconds (default 240).",
 )
 @click.option(
     "--question-timeout",
     type=click.FloatRange(min=0.0, min_open=True),
-    default=3600.0,
-    help="End-to-end wall-clock timeout per question in seconds (default 3600 = 1h).",
+    default=900.0,
+    help="End-to-end wall-clock timeout per question in seconds (default 900 = 15min).",
+)
+@click.option(
+    "--research-timeout",
+    type=click.FloatRange(min=0.0, min_open=True),
+    default=420.0,
+    help="Research-stage hard timeout in seconds (default 420).",
+)
+@click.option(
+    "--write-timeout",
+    type=click.FloatRange(min=0.0, min_open=True),
+    default=180.0,
+    help="Verification and synthesis hard timeout in seconds (default 180).",
 )
 @click.option("--limit", type=int, default=None, help="Run only the first N questions.")
 @click.option(
-    "--concurrency", type=int, default=1, help="Reserved: parallelism. Currently serial (1)."
+    "--concurrency",
+    type=click.IntRange(min=1),
+    default=2,
+    help="Maximum questions evaluated concurrently (default 2).",
+)
+@click.option(
+    "--subset",
+    type=str,
+    default=None,
+    help="Fixed qid manifest, e.g. core10. Validates source dataset hash.",
 )
 @click.option(
     "--output-dir",
@@ -120,8 +143,11 @@ def run(
     judge_kind: str,
     judge_timeout: float,
     question_timeout: float,
+    research_timeout: float,
+    write_timeout: float,
     limit: int | None,
     concurrency: int,
+    subset: str | None,
     output_dir: Path | None,
     resume: bool,
     confirm_full: bool,
@@ -129,12 +155,10 @@ def run(
     experiment_name: str | None,
 ) -> None:
     """Run the eval harness over a dataset."""
-    if concurrency != 1:
-        click.echo("note: --concurrency>1 is reserved; running serial (1).", err=True)
-
     # --- Load dataset -------------------------------------------------------
     adapter_errors: list[dict[str, object]] = []
     dataset_hash = ""
+    subset_metadata: dict[str, object] = {}
     if dataset is not None:
         if not dataset.is_file():
             click.echo(f"dataset not found: {dataset}", err=True)
@@ -144,19 +168,35 @@ def run(
         adapter_errors = adapter.errors
         dataset_hash = adapter.dataset_sha256()
         config_name = "drb2"
+        if subset:
+            try:
+                manifest = load_subset(subset)
+                questions = apply_subset(questions, manifest, dataset_hash=dataset_hash)
+                subset_metadata = manifest.metadata()
+                config_name = manifest.name
+            except ValueError as subset_error:
+                click.echo(str(subset_error), err=True)
+                sys.exit(2)
     else:
+        if subset:
+            click.echo("--subset requires --dataset", err=True)
+            sys.exit(2)
         questions = FixtureDataset().questions()
         config_name = "fixture"
 
     if adapter_errors:
         click.echo(f"warning: {len(adapter_errors)} malformed dataset line(s):", err=True)
-        for e in adapter_errors:
-            click.echo(f"  line {e.get('line')}: {e.get('error')}", err=True)
+        for adapter_error in adapter_errors:
+            click.echo(
+                f"  line {adapter_error.get('line')}: {adapter_error.get('error')}", err=True
+            )
 
     n_total = len(questions)
 
     # --- Budget guard: default to a 3-question smoke unless confirmed --------
-    if limit is None and not confirm_full:
+    if limit is None and subset:
+        limit = n_total
+    elif limit is None and not confirm_full:
         limit = 3
         click.echo(
             f"no --limit and no --confirm-full: running a 3-question smoke slice "
@@ -179,10 +219,28 @@ def run(
         else:
             out = output_dir
     out.mkdir(parents=True, exist_ok=True)
+    if resume:
+        snapshot_path = out / "config_snapshot.json"
+        if snapshot_path.is_file():
+            try:
+                prior_run = json.loads(snapshot_path.read_text(encoding="utf-8")).get("run", {})
+            except Exception as e:  # noqa: BLE001
+                click.echo(f"invalid resume config snapshot: {type(e).__name__}", err=True)
+                sys.exit(2)
+            if prior_run.get("dataset_hash") != dataset_hash:
+                click.echo("resume rejected: dataset hash mismatch", err=True)
+                sys.exit(2)
+            if prior_run.get("subset", {}) != subset_metadata:
+                click.echo("resume rejected: subset metadata mismatch", err=True)
+                sys.exit(2)
 
     # --- Assemble runner ----------------------------------------------------
     config = CONFIGS["full"]
-    answerer = make_research_runner_answerer(mode=mode)
+    answerer = make_research_runner_answerer(
+        mode=mode,
+        research_timeout=research_timeout,
+        write_timeout=write_timeout,
+    )
     judge, judge_kind_resolved, provider_model = _resolve_judge(judge_kind)
     provider = provider_model.split("/")[0]
     model = provider_model.split("/", 1)[1] if "/" in provider_model else "unknown"
@@ -195,6 +253,8 @@ def run(
         ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         if experiment_name:
             exp_prefix = experiment_name
+        elif subset:
+            exp_prefix = f"{config_name}-c{concurrency}-{_git_commit()[:8]}-{ts}"
         elif confirm_full and limit >= n_total:
             # v2 名：与旧坏结果隔离，不覆盖。
             exp_prefix = f"drb2-full-live-qwen-v2-{ts}"
@@ -210,6 +270,8 @@ def run(
             prompt_commits=_prompt_commits(),
             git_commit=_git_commit(),
             research_mode=mode,
+            concurrency=concurrency,
+            subset_metadata=subset_metadata,
         )
         click.echo(
             f"experiment: {'enabled' if experiment_sink.enabled else 'disabled'} "
@@ -228,11 +290,14 @@ def run(
         experiment_sink=None,  # experiment 模式走 sink.arun_experiment，不走内嵌钩子
         judge_timeout=judge_timeout,
         question_timeout=question_timeout,
+        concurrency=concurrency,
+        subset_metadata=subset_metadata,
     )
 
     click.echo(
         f"eval run: dataset={config_name} n={n_total} limit={limit} mode={mode} "
-        f"judge={judge_kind_resolved} question_timeout={question_timeout:g}s out={out}"
+        f"judge={judge_kind_resolved} concurrency={concurrency} "
+        f"question_timeout={question_timeout:g}s subset={subset or 'none'} out={out}"
     )
     import asyncio
 

@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "name": "drb2_core10",
+  "source_dataset": "evals/data/deepresearch_bench_ii/tasks_and_rubrics.jsonl",
+  "source_sha256": "2b29012d0842b2986fa532bebb67aa9362fe1fe5cee81a63a70c6f1f30f9ff69",
+  "qid_sha256": "13549046e3d1b100ebb7144a71518b14b507ee90f647d1b0b5207253611ebc75",
+  "qids": [
+    "task7",
+    "task8",
+    "task17",
+    "task71",
+    "task25",
+    "task32",
+    "task84",
+    "task40",
+    "task47",
+    "task48"
+  ],
+  "selection": {
+    "languages": {"zh": 5, "en": 5},
+    "themes": 10,
+    "purpose": "Fixed, diverse iteration set for latency, quality, tracing, and usage regression checks."
+  }
+}

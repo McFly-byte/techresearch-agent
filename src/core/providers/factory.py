@@ -42,6 +42,7 @@ def build_provider(
         model_id=model,
         base_url=s.qwen_base_url,
         api_key=s.dashscope_api_key.get_secret_value(),
+        timeout=s.qwen_request_timeout_seconds,
     )
 
 

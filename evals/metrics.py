@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from core.prompts import PromptRegistry, get_default_registry
 from core.providers.base import BaseLLMProvider, Message
+from core.usage import usage_stage
 from evals.adapter import EvalResult
 
 log = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ class _JudgeError(RuntimeError):
 _BATCH_SIZE = 12
 # 每批 LLM 调用超时（秒）。与 QwenProvider 的 120s timeout 对齐：
 # 长答案 + 12 条 rubric 的批次在大模型上可能超过 60s，避免合法调用被误判超时。
-_BATCH_TIMEOUT = 120.0
+_BATCH_TIMEOUT = 90.0
 # 三态分值。
 SCORE_PASS = 1
 SCORE_FAIL = 0
@@ -106,7 +107,7 @@ _PER_RUBRIC_TOKENS = 300
 _BATCH_TOKENS_FLOOR = 500
 # 整题默认全局硬上限（秒）。109 rubrics / batch_size=12 = 9 批，串行最坏
 # 900s*9 ≈ 2.25h；2 路并发 + 30min 硬上限是质量优先但有界的折中。
-_DEFAULT_TOTAL_TIMEOUT = 1800.0
+_DEFAULT_TOTAL_TIMEOUT = 240.0
 # 批次并发上限：同时最多 2 个批次在飞，避免打爆 Qwen 限流。
 _BATCH_CONCURRENCY = 2
 # 单项缺失重试并发上限。
@@ -214,12 +215,22 @@ class LLMRubricJudge:
             dim = dims[i] if i < len(dims) else None
             if rubric in blocked_set:
                 per_item.append(
-                    {"rubric": rubric, "score": SCORE_BLOCKED, "reason": "blocked", "dimension": dim}
+                    {
+                        "rubric": rubric,
+                        "score": SCORE_BLOCKED,
+                        "reason": "blocked",
+                        "dimension": dim,
+                    }
                 )
                 n_blocked += 1
             else:
                 per_item.append(
-                    {"rubric": rubric, "score": SCORE_FAIL, "reason": "judge_timeout", "dimension": dim}
+                    {
+                        "rubric": rubric,
+                        "score": SCORE_FAIL,
+                        "reason": "judge_timeout",
+                        "dimension": dim,
+                    }
                 )
         live_scores = [SCORE_FAIL] * (len(rubrics) - n_blocked)
         mean = sum(live_scores) / len(live_scores) if live_scores else 1.0
@@ -243,7 +254,12 @@ class LLMRubricJudge:
             dim = dims[i] if i < len(dims) else None
             if rubric in blocked_set:
                 per_item.append(
-                    {"rubric": rubric, "score": SCORE_BLOCKED, "reason": "blocked", "dimension": dim}
+                    {
+                        "rubric": rubric,
+                        "score": SCORE_BLOCKED,
+                        "reason": "blocked",
+                        "dimension": dim,
+                    }
                 )
             else:
                 per_item.append(
@@ -345,10 +361,11 @@ class LLMRubricJudge:
 
         for _attempt in range(max(1, attempts)):
             try:
-                resp = await asyncio.wait_for(
-                    self._llm.acomplete(messages, max_tokens=max_tokens),
-                    timeout=self._timeout,
-                )
+                with usage_stage("judge"):
+                    resp = await asyncio.wait_for(
+                        self._llm.acomplete(messages, max_tokens=max_tokens),
+                        timeout=self._timeout,
+                    )
             except TimeoutError:
                 continue
             except Exception:  # noqa: BLE001 - 屏蔽供应商错误体
@@ -359,9 +376,7 @@ class LLMRubricJudge:
             # 解析失败则进入下一次重试；重试耗尽后落到空 dict。
         return {}
 
-    async def _score_single(
-        self, answer: str, rubric_text: str
-    ) -> tuple[int, str] | None:
+    async def _score_single(self, answer: str, rubric_text: str) -> tuple[int, str] | None:
         """把一条解析失败的 rubric 单独重发一次（有界：恰好一次网络请求）。
 
         用于整批里个别项损坏/缺失时，只重发该项而非重发整批。返回 ``(score, reason)``，
@@ -488,7 +503,7 @@ def _parse_batch_judge_json(text: str) -> dict[int, tuple[int, str]] | None:
     if items is None:
         lb = cleaned.find("[")
         if lb != -1:
-            recovered = _scan_array_objects(cleaned[lb + 1:])
+            recovered = _scan_array_objects(cleaned[lb + 1 :])
             if recovered:
                 items = recovered
 

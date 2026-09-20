@@ -96,14 +96,14 @@ def test_classify_failure_success_is_empty() -> None:
     assert classify_failure(r) == ""
 
 
-# --- Config snapshot + cost guard -------------------------------------------
+# --- Config snapshot + dataset-size guard -----------------------------------
 def test_config_snapshot_has_required_fields() -> None:
     snap = CONFIGS["full"].snapshot()
     for k in ("python", "platform", "git_commit", "prompt_version", "code_version", "config"):
         assert k in snap, f"missing {k}"
 
 
-def test_cost_guard_default_is_10() -> None:
+def test_dataset_size_guard_default_is_10() -> None:
     assert CONFIGS["full"].max_questions_per_run == 10
     assert CONFIGS["full"].max_questions_per_run <= 10
 

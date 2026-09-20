@@ -29,6 +29,7 @@ from typing import Any, Protocol, runtime_checkable
 from core.prompts import PromptRegistry, get_default_registry, load_lock
 from core.providers.base import BaseLLMProvider, Message
 from core.tracing import TracingContext, noop_tracing
+from core.usage import usage_stage
 from domain.models import Citation
 from domain.verification import (
     Claim,
@@ -510,8 +511,11 @@ class LLMNLI:
             # metadata so LangSmith associates BOTH prompts to the Application.
             sys_commit = self._prompt_commits.get("citation_verifier_system", "")
             user_commit = self._prompt_commits.get("citation_verifier_user", "")
-            with self._tracing.llm_prompt_span("citation_verifier_system", sys_commit), \
-                 self._tracing.llm_prompt_span("citation_verifier_user", user_commit):
+            with (
+                usage_stage("verifier"),
+                self._tracing.llm_prompt_span("citation_verifier_system", sys_commit),
+                self._tracing.llm_prompt_span("citation_verifier_user", user_commit),
+            ):
                 resp = await self._llm.acomplete(messages)
         except NLIProviderError:
             # Re-raise our own stable errors unchanged (they already carry the

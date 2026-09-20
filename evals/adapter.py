@@ -91,10 +91,17 @@ class EvalResult:
     citations: list[str] = field(default_factory=list)
     n_search_rounds: int = 0
     tokens_estimated: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    usage_by_stage: dict[str, dict[str, object]] = field(default_factory=dict)
     # True when tokens_estimated is a character-derived estimate (fake /
     # heuristic), False when the provider reported real API usage.
     usage_estimated: bool = True
     latency_s: float = 0.0
+    answer_latency_s: float = 0.0
+    judge_latency_s: float = 0.0
+    attempt: int = 1
     error: str = ""
     # Per-config metrics get computed downstream.
     judge_score: float = 0.0  # 0..1, set by judge
@@ -103,6 +110,11 @@ class EvalResult:
     # the offline KeywordJudge fallback.
     judge_detail: str = ""
     failure_category: str = ""  # retrieval / reasoning / hallucination / freshness / tool
+    experiment_name: str = ""
+    experiment_id: str = ""
+    run_id: str = ""
+    trace_id: str = ""
+    trace_url: str = ""
 
 
 class FixtureDataset:
@@ -207,7 +219,7 @@ def _parse_blocked_urls_from_prompt(prompt: str) -> list[str]:
     m = _BLOCKED_PHRASE_RE.search(prompt)
     if not m:
         return []
-    tail = prompt[m.start():]
+    tail = prompt[m.start() :]
     return [u.rstrip(".,;，。；") for u in _PROMPT_URL_RE.findall(tail)]
 
 

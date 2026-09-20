@@ -29,6 +29,7 @@ from core.exceptions import ToolError
 from core.prompts import PromptRegistry, get_default_registry, load_lock
 from core.providers.base import BaseLLMProvider, LLMResponse, Message
 from core.tracing import TracingContext, noop_tracing
+from core.usage import usage_stage
 from domain.models import Citation, Fact
 from domain.verification import (
     Claim,
@@ -318,7 +319,11 @@ class VerifiedReportBuilder:
         # Sort: verified first, then neutral, then refetch_failed.
         _status_order = {"verified": 0, "neutral": 1, "refetch_failed": 2}
         sorted_claims = sorted(
-            [c for c in revised_claims if c.verification_status != "dropped" and c.claim_text.strip()],
+            [
+                c
+                for c in revised_claims
+                if c.verification_status != "dropped" and c.claim_text.strip()
+            ],
             key=lambda c: _status_order.get(c.verification_status, 9),
         )[:_MAX_FACTS]
 
@@ -326,7 +331,9 @@ class VerifiedReportBuilder:
         kept_cit_ids: set[str] = set()
         for c in sorted_claims:
             kept_cit_ids.update(c.citation_ids)
-        filtered_citations = [cit for cit in citations if cit.citation_id in kept_cit_ids][:_MAX_CITATIONS]
+        filtered_citations = [cit for cit in citations if cit.citation_id in kept_cit_ids][
+            :_MAX_CITATIONS
+        ]
         filtered_cit_ids = {cit.citation_id for cit in filtered_citations}
 
         old_to_simple: dict[str, str] = {}
@@ -339,16 +346,18 @@ class VerifiedReportBuilder:
 
         facts_lines: list[str] = []
         for seq, c in enumerate(sorted_claims, start=1):
-            sids = [old_to_simple[x] for x in c.citation_ids if x in old_to_simple and x in filtered_cit_ids]
+            sids = [
+                old_to_simple[x]
+                for x in c.citation_ids
+                if x in old_to_simple and x in filtered_cit_ids
+            ]
             status_label = {
                 "verified": "verified",
                 "neutral": "uncertain",
                 "refetch_failed": "evidence_unavailable",
             }.get(c.verification_status, c.verification_status)
             claim_text = c.claim_text[:_FACT_CHARS]
-            facts_lines.append(
-                f"{seq}. {claim_text} [{', '.join(sids)}]  (status: {status_label})"
-            )
+            facts_lines.append(f"{seq}. {claim_text} [{', '.join(sids)}]  (status: {status_label})")
         verified_facts_block = "\n".join(facts_lines) if facts_lines else "(no verified facts)"
         citations_block = "\n".join(
             f"[{cit.citation_id}] {cit.title or cit.locator} — {cit.locator}"
@@ -367,11 +376,11 @@ class VerifiedReportBuilder:
                 "do not cite or mention them."
             )
         if n_post_cutoff:
-            cons.append(
-                f"- {n_post_cutoff} post-cutoff source(s) were removed; do not cite them."
-            )
+            cons.append(f"- {n_post_cutoff} post-cutoff source(s) were removed; do not cite them.")
         if date_unconfirmed_ids:
-            cons.append("- Some sources have unconfirmed publication dates; phrase claims carefully.")
+            cons.append(
+                "- Some sources have unconfirmed publication dates; phrase claims carefully."
+            )
         cons.append("- Write the report in the SAME language as the user question.")
         constraints_block = "\n".join(cons)
 
@@ -389,14 +398,18 @@ class VerifiedReportBuilder:
         total_chars = sum(len(m.content) for m in messages)
         log.info(
             "report_synthesis_input chars=%d facts=%d citations=%d",
-            total_chars, len(revised_claims), len(citations),
+            total_chars,
+            len(revised_claims),
+            len(citations),
         )
 
         sys_commit = self._prompt_commits.get("report_synthesis_system", "")
         user_commit = self._prompt_commits.get("report_synthesis_user", "")
-        with self._tracing.llm_prompt_span(
-            "report_synthesis_system", sys_commit
-        ), self._tracing.llm_prompt_span("report_synthesis_user", user_commit):
+        with (
+            usage_stage("synthesis"),
+            self._tracing.llm_prompt_span("report_synthesis_system", sys_commit),
+            self._tracing.llm_prompt_span("report_synthesis_user", user_commit),
+        ):
             resp = await self._llm_provider.acomplete(messages, max_tokens=2048)
         self.last_synthesis_usage = resp
         md = (resp.text or "").strip()
@@ -510,7 +523,8 @@ class VerifiedReportBuilder:
                 # gate (and therefore the runner) flags the task.
                 log.warning(
                     "report_synthesis_failed error_type=%s error_msg=%s",
-                    type(e).__name__, str(e)[:500],
+                    type(e).__name__,
+                    str(e)[:500],
                 )
                 md = render_markdown(
                     query=query,
@@ -714,7 +728,7 @@ def render_html(
     parts.append("</ul><h2>Citations</h2><ul>")
     for cit in citations:
         title = cit.title or cit.locator
-        note = ' <small>（日期未确认）</small>' if cit.citation_id in _unconfirmed else ""
+        note = " <small>（日期未确认）</small>" if cit.citation_id in _unconfirmed else ""
         parts.append(f"<li>[{e(cit.citation_id)}] {_safe_href(cit.locator, title)}{note}</li>")
     parts.append("</ul>")
     return "".join(parts)

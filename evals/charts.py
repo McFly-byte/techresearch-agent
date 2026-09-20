@@ -3,7 +3,6 @@
 No matplotlib dependency. Reads <out_dir>/results/*.json and produces:
 - <out_dir>/charts/bar.html: grouped bar chart of judge_score by config
 - <out_dir>/charts/ablation.html: change vs full
-- <out_dir>/charts/pareto.html: cost (tokens) vs quality (judge_score)
 
 All charts are static HTML+SVG; data is embedded as JSON in the HTML.
 """

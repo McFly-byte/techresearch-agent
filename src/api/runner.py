@@ -23,6 +23,7 @@ from agents.budget import BudgetManager
 from agents.worker import ModelRouter, WorkerNode
 from api.task_store import TaskRecord, TaskStore
 from core.config import Settings
+from core.deadlines import run_with_hard_timeout
 from core.exceptions import ConfigurationError, ProviderError
 from core.providers.factory import build_provider
 from core.providers.fake import FakeLLM
@@ -198,6 +199,10 @@ class ResearchRunner:
         mode: str = "fake",
         tracing: TracingContext | None = None,
         memory_store: Any = None,
+        research_timeout: float | None = None,
+        write_timeout: float = 180.0,
+        verifier_call_timeout: float = 60.0,
+        synthesis_call_timeout: float = 120.0,
     ) -> None:
         self._store = store
         self._memory_store = memory_store
@@ -206,6 +211,14 @@ class ResearchRunner:
         self._settings = settings or get_settings()
         self._kit = kit
         self._mode = mode
+        self._research_timeout = (
+            float(research_timeout)
+            if research_timeout is not None
+            else float(self._settings.research_timeout_seconds)
+        )
+        self._write_timeout = float(write_timeout)
+        self._verifier_call_timeout = float(verifier_call_timeout)
+        self._synthesis_call_timeout = float(synthesis_call_timeout)
         # Tracing resolution (stage-0-1 boundary):
         # - Injected tracing always wins (tests inject RecordingTracing).
         # - fake mode FORCES noop tracing, regardless of any stored key or the
@@ -273,7 +286,7 @@ class ResearchRunner:
             result: dict[str, Any] = {}
             planner_exc: BaseException | None = None
             try:
-                result = await asyncio.wait_for(
+                result = await run_with_hard_timeout(
                     graph.ainvoke(
                         {
                             "query": rec.query,
@@ -281,7 +294,8 @@ class ResearchRunner:
                             "research_depth": rec.research_depth,
                         }
                     ),
-                    timeout=self._settings.research_timeout_seconds,
+                    timeout=self._research_timeout,
+                    label="research_timeout",
                 )
             except BaseException as exc:  # noqa: BLE001
                 planner_exc = exc
@@ -335,6 +349,8 @@ class ResearchRunner:
 
             if kit.mode == "live":
                 verifier_llm = kit.llm.with_model(self._settings.qwen_verifier_model)
+                if hasattr(verifier_llm, "with_timeout"):
+                    verifier_llm = verifier_llm.with_timeout(self._verifier_call_timeout)
                 # Pass tracing so the NLI LLM runs carry
                 # lc_hub_repo / lc_hub_commit_hash metadata and LangSmith
                 # associates citation_verifier_system / _user to the Application.
@@ -342,6 +358,9 @@ class ResearchRunner:
                 verifier = CitationVerifier(fetcher=kit.fetcher, nli=nli)
             else:
                 verifier = CitationVerifier(fetcher=kit.fetcher)
+            synthesis_llm = kit.llm if kit.mode == "live" else None
+            if synthesis_llm is not None and hasattr(synthesis_llm, "with_timeout"):
+                synthesis_llm = synthesis_llm.with_timeout(self._synthesis_call_timeout)
             builder = VerifiedReportBuilder(
                 verifier=verifier,
                 blocked_urls=rec.blocked_urls,
@@ -351,13 +370,20 @@ class ResearchRunner:
                 # Live mode synthesizes the report with the real LLM (quality
                 # gated). Fake mode passes None -> deterministic template,
                 # zero network, hermetic for offline tests.
-                llm_provider=kit.llm if kit.mode == "live" else None,
+                llm_provider=synthesis_llm,
                 tracing=self._tracing,
             )
             write_exc: BaseException | None = None
             try:
-                report = await builder.build(
-                    query=rec.query, facts=facts, citations=citations, mode=kit.mode
+                report = await run_with_hard_timeout(
+                    builder.build(
+                        query=rec.query,
+                        facts=facts,
+                        citations=citations,
+                        mode=kit.mode,
+                    ),
+                    timeout=self._write_timeout,
+                    label="write_timeout",
                 )
             except BaseException as exc:  # noqa: BLE001
                 write_exc = exc
@@ -433,9 +459,9 @@ class ResearchRunner:
             rec.status = "cancelled"
             rec.error = "cancelled"
             self._emit(rec, event_type="cancelled", stage="cancelled", data={})
-        except TimeoutError:
+        except TimeoutError as e:
             rec.status = "failed"
-            rec.error = f"research_timeout after {self._settings.research_timeout_seconds:g}s"
+            rec.error = str(e) or "timeout"
             self._emit(
                 rec,
                 event_type="error",

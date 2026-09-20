@@ -1,7 +1,8 @@
 # evals/ — 可复现评测
 
-> **当前状态：仅通过 fixture / smoke 验证。未运行任何付费模型的正式评测。**
-> 不要把这里的任何数字当成项目成绩。
+> 默认迭代集是固定的 **Core10**。全量 132 题仍需显式确认。
+> Qwen judge 的结果统一标记为 `qwen-nonofficial`；
+> `official_judge = not_run (requires GPT-5.5)`。
 
 ## 目录结构
 
@@ -11,6 +12,8 @@ evals/
 ├── configs.py      # EvalConfig + 7 个消融配置（llm_only / naive_rag / full / ...）
 ├── metrics.py     # compute_metrics + KeywordJudge（离线占位 judge）
 ├── runner.py       # EvalRunner：可断点续跑、配置快照、单题失败隔离
+├── subset.py       # 固定子集清单加载及源数据 hash 校验
+├── subsets/        # Core10 等版本化 qid 清单
 └── README.md       # 本文件
 ```
 
@@ -19,11 +22,38 @@ evals/
 | 层级 | 命令 | 题量 | 是否付费 |
 |---|---|---|---|
 | fixture | `pytest tests/unit/test_eval_harness.py` | 3 | 否 |
-| smoke   | 手动跑 2-3 题（需 Key） | 2-3 | 少量 |
-| 正式子集 | 手动，20-30 题 | 20-30 | 中 |
+| Core4 pilot | `--subset core10 --limit 4` | 4 | 少量 |
+| Core10 | `--subset core10` | 10 | 中 |
 | 全量 132 题 | **必须显式 `--confirm-full`** | 132 | 高 |
 
-全量运行默认关闭。需要 Key 和预算确认后才允许启动。
+推荐命令：
+
+```powershell
+# 先跑四题，创建唯一 Experiment；默认题目并发为 2。
+python -m evals.cli run `
+  --dataset evals/data/deepresearch_bench_ii/tasks_and_rubrics.jsonl `
+  --subset core10 --limit 4 --mode live --judge llm `
+  --output-dir evals/runs/drb2_core10_live_qwen_v3
+
+# 验收后在原目录、原 Experiment 内补齐 Core10；completed 题自动跳过。
+python -m evals.cli run `
+  --dataset evals/data/deepresearch_bench_ii/tasks_and_rubrics.jsonl `
+  --subset core10 --mode live --judge llm `
+  --output-dir evals/runs/drb2_core10_live_qwen_v3 --resume
+```
+
+默认时限为：整题 900 秒、研究 420 秒、验证与合成 180 秒、judge 240 秒。
+这些值均可通过对应 CLI 参数覆盖。`--resume` 会核对数据集 hash 和子集元数据，
+防止把不同数据或不同 qid 清单混入同一次实验。
+
+## LangSmith 定位
+
+- `experiment.json` 保存唯一 Experiment 的名称、ID、URL 和完整 Core10 qid。
+- `results/<qid>.json` 保存该题的 `run_id`、`trace_id` 和 `trace_url`。
+- Experiment 表格输出 qid、状态、延迟和 input/output/total token；点击该行即可进入
+  该题的 root trace，并查看研究、工具、验证、合成和 judge 子节点。
+- `--resume` 读取 `experiment.json` 并复用原 Experiment，不再生成带随机后缀的新实验。
+- Experiment 视图会尝试隐藏 input/output/total cost，仅保留 token 指标。
 
 ## 消融配置
 
@@ -40,9 +70,8 @@ evals/
 ## 数据许可
 
 - `FixtureDataset` 是合成数据，仅用于测试，无外部许可问题。
-- DeepResearch Bench II 等官方数据集**不入库**。需要时通过下载脚本获取，
-  并记录版本/commit/hash/许可证。大文件加入 `.gitignore`。
-- 当前未联网核对官方仓库的最新格式，需用户手动确认后再写 adapter。
+- DeepResearch Bench II 原始数据不入库；本地数据必须通过固定 SHA-256 与 Core10
+  清单绑定。版本、来源和许可证单独记录，大文件加入 `.gitignore`。
 
 ## 指标口径
 
@@ -53,15 +82,13 @@ evals/
 
 ## LLM Judge
 
-当前是 `KeywordJudge`（离线关键词匹配），**不是** LLM judge。
-真实 LLM judge 的 prompt 和版本需纳入配置；judge 输入/输出落盘后才能宣称与
-人类一致。目前**没有**这种证据。
+`KeywordJudge` 只用于离线结构验证。真实运行使用 rubric LLM judge，结果仍属于
+非官方替代评审，不能当作官方 GPT-5.5 成绩。
 
-## 待办（需要真实 Key 才能做）
+## 运行门禁
 
-1. 写 DeepResearch Bench II adapter（需先核对官方仓库格式）
-2. 跑 2-3 题 smoke，确认管线
-3. 跑 20-30 题正式子集
-4. 接真实 LLM judge，做少量人工校准
-5. 生成分组柱状图 / 帕累托图（从 summary.json 程序化生成）
-6. 失败分类与人工复核最多 10 个代表性案例
+1. 离线测试、Ruff、mypy 全部通过。
+2. Core4 验收唯一 Experiment、qid 可定位、trace 树完整、token 非零、题目不超过
+   900 秒。
+3. Core4 通过后使用同一目录 `--resume` 完成 Core10。
+4. Core10 稳定且迭代方案冻结后，才考虑显式启动 Full132。

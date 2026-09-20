@@ -9,15 +9,32 @@ response. If usage is missing, it is omitted (not faked).
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import random
+import weakref
 from typing import Any
 
 import httpx
 
 from core.exceptions import ProviderError, ProviderNotConfiguredError
 from core.providers.base import BaseLLMProvider, LLMResponse, Message
+from core.usage import record_llm_usage
 
 # 可重试的 HTTP 状态码：限流与服务端瞬时错误。401/403（鉴权/配额）不重试。
 _RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+_GLOBAL_INFLIGHT = 4
+_LOOP_LIMITERS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _global_limiter() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    limiter = _LOOP_LIMITERS.get(loop)
+    if limiter is None:
+        limiter = asyncio.Semaphore(_GLOBAL_INFLIGHT)
+        _LOOP_LIMITERS[loop] = limiter
+    return limiter
 
 
 class QwenProvider(BaseLLMProvider):
@@ -29,7 +46,7 @@ class QwenProvider(BaseLLMProvider):
         model_id: str,
         base_url: str,
         api_key: str,
-        timeout: float = 300.0,
+        timeout: float = 75.0,
         max_retries: int = 1,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -58,6 +75,17 @@ class QwenProvider(BaseLLMProvider):
             base_url=self._base_url,
             api_key=self._api_key,
             timeout=self._timeout,
+            max_retries=self._max_retries,
+            client=self._client,
+        )
+
+    def with_timeout(self, timeout: float) -> QwenProvider:
+        """Clone the provider with a stage-specific request timeout."""
+        return QwenProvider(
+            model_id=self.model_id,
+            base_url=self._base_url,
+            api_key=self._api_key,
+            timeout=timeout,
             max_retries=self._max_retries,
             client=self._client,
         )
@@ -96,40 +124,44 @@ class QwenProvider(BaseLLMProvider):
             client = httpx.AsyncClient(timeout=self._timeout)
             close_client = True
 
-        # 带退避的重试：仅对瞬时错误（超时/连接错误/429/5xx）重试；
-        # 401/403（鉴权/配额）立即抛出，重试无意义。
+        # 带退避的重试：全进程最多四个 Qwen 请求同时在飞。429 优先遵循
+        # Retry-After，其余瞬时错误使用指数退避和少量 jitter。
         resp: httpx.Response | None = None
         last_exc: Exception | None = None
         max_attempts = self._max_retries + 1
-        for attempt in range(max_attempts):
-            try:
-                resp = await client.post(url, json=payload, headers=headers)
-            except httpx.TimeoutException as e:
-                # 超时也重试：可能是瞬时 API 慢/限流，退避后重试可能成功。
-                # 最多 max_retries+1 次尝试，每次 180s 超时。
-                last_exc = e
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(2.0 * (attempt + 1))
-                    continue
-                raise ProviderError(f"Qwen request timed out after {max_attempts} attempts: {e}") from e
-            except httpx.HTTPError as e:
-                last_exc = e
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(1.0 * (attempt + 1))
-                    continue
-                raise ProviderError(f"Qwen request failed: {e}") from e
-
-            # 可重试的服务端/限流状态码：退避后重试。
-            if resp.status_code in _RETRYABLE_STATUS and attempt < max_attempts - 1:
-                await asyncio.sleep(1.0 * (attempt + 1))
-                continue
-            break
-
         try:
+            for attempt in range(max_attempts):
+                try:
+                    async with _global_limiter():
+                        resp = await client.post(url, json=payload, headers=headers)
+                except httpx.TimeoutException as e:
+                    last_exc = e
+                    if attempt < max_attempts - 1:
+                        await asyncio.sleep(2.0**attempt + random.uniform(0.0, 0.25))
+                        continue
+                    raise ProviderError(
+                        f"Qwen request timed out after {max_attempts} attempts: {e}"
+                    ) from e
+                except httpx.HTTPError as e:
+                    last_exc = e
+                    if attempt < max_attempts - 1:
+                        await asyncio.sleep(2.0**attempt + random.uniform(0.0, 0.25))
+                        continue
+                    raise ProviderError(f"Qwen request failed: {e}") from e
+
+                if resp.status_code in _RETRYABLE_STATUS and attempt < max_attempts - 1:
+                    retry_after = resp.headers.get("Retry-After", "")
+                    try:
+                        delay = max(0.0, float(retry_after))
+                    except ValueError:
+                        delay = 2.0**attempt
+                    await asyncio.sleep(delay + random.uniform(0.0, 0.25))
+                    continue
+                break
+        finally:
             if close_client:
-                await client.aclose()
-        except Exception:  # noqa: BLE001 - 关闭失败不影响主流程
-            pass
+                with contextlib.suppress(Exception):
+                    await client.aclose()
 
         if resp is None:  # 理论上不会走到这里，防御性兜底
             raise ProviderError(f"Qwen request failed: {last_exc}")
@@ -149,6 +181,13 @@ class QwenProvider(BaseLLMProvider):
         completion_tokens = int(usage.get("completion_tokens", 0) or 0)
         # Mark reported only when the API actually supplied usage counts.
         usage_reported = prompt_tokens > 0 or completion_tokens > 0
+        record_llm_usage(
+            provider=self.provider_name,
+            model=str(data.get("model", effective_model)),
+            input_tokens=prompt_tokens,
+            output_tokens=completion_tokens,
+            estimated=not usage_reported,
+        )
         return LLMResponse(
             text=content,
             model=data.get("model", effective_model),

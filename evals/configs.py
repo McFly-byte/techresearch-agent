@@ -26,9 +26,8 @@ class EvalConfig:
     max_search_rounds: int = 2
     max_iterations: int = 3
     seed: int = 42
-    # Budget guard.
+    # Dataset-size guard. Token budgets are enforced by the production runner.
     max_questions_per_run: int = 10
-    max_cost_usd: float = 1.0
     # Model label (not a key).
     model_label: str = "fake-heuristic"
 

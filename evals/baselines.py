@@ -24,6 +24,7 @@ from agents.budget import BudgetManager
 from agents.worker import WorkerNode
 from api.runner import ResearchRunner
 from api.task_store import TaskStore
+from core.tracing import LangSmithTracing
 from domain.models import SearchResult
 from evals.adapter import EvalPrompt
 from graph.builder import build_graph
@@ -69,7 +70,14 @@ async def answer_full(prompt: EvalPrompt) -> tuple[str, int, int]:
 # --- Production answerer: through ResearchRunner -----------------------------
 
 
-def make_research_runner_answerer(mode: str = "fake"):
+def make_research_runner_answerer(
+    mode: str = "fake",
+    *,
+    research_timeout: float = 420.0,
+    write_timeout: float = 180.0,
+    verifier_call_timeout: float = 60.0,
+    synthesis_call_timeout: float = 120.0,
+):
     """Build an async answerer that runs the REAL shipped research system.
 
     Returns ``async (EvalPrompt) -> dict`` with keys:
@@ -96,7 +104,28 @@ def make_research_runner_answerer(mode: str = "fake"):
         rec.blocked_domains = list(prompt.blocked_domains)
         rec.blocked_titles = list(prompt.blocked_titles)
         rec.as_of_date = prompt.as_of_date
-        runner = ResearchRunner(store, mode=mode)
+        tracing = None
+        if mode == "live":
+            try:
+                from langsmith.run_helpers import get_current_run_tree
+
+                root = get_current_run_tree()
+                if root is not None:
+                    tracing = LangSmithTracing(
+                        client=root.ls_client,
+                        project_name=root.session_name or "deepresearch-eval",
+                    )
+            except Exception:  # noqa: BLE001 - tracing must not block an eval
+                tracing = None
+        runner = ResearchRunner(
+            store,
+            mode=mode,
+            tracing=tracing,
+            research_timeout=research_timeout,
+            write_timeout=write_timeout,
+            verifier_call_timeout=verifier_call_timeout,
+            synthesis_call_timeout=synthesis_call_timeout,
+        )
         await runner.run(rec)
         if rec.status != "completed":
             raise RuntimeError(rec.error or "research runner did not complete")
