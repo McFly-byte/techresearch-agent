@@ -305,7 +305,11 @@ class LangSmithExperimentSink:
             {"column": "metrics.completion_cost", "hide": True},
         ]
         try:
-            response = request("GET", path)
+            # LangSmith returns 404 when the dataset has no override yet. Treat
+            # that as an empty configuration so the following POST can create it.
+            from langsmith.utils import LangSmithNotFoundError
+
+            response = request("GET", path, to_ignore=[LangSmithNotFoundError])
             existing: object = response.json() if response.status_code == 200 else None
             if isinstance(existing, list) and existing:
                 current = existing[0]
