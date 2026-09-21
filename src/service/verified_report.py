@@ -417,6 +417,55 @@ class VerifiedReportBuilder:
         self.last_synthesis_usage = resp
         md = (resp.text or "").strip()
         quality = check_report_quality(md, query=query, citations=simple_citations)
+        # A fluent report with one invented/malformed citation id should not
+        # force the whole research pipeline to run again. Re-render the
+        # already verified claims with the deterministic template and the
+        # exact renumbered citation map. This changes presentation only; it
+        # never adds a claim or guesses a source.
+        citation_only_failure = (
+            quality["non_empty"]
+            and quality["not_prompt_echo"]
+            and quality["citations_nonempty"]
+            and not quality["citations_traceable"]
+        )
+        if citation_only_failure:
+            simple_claims: list[Claim] = []
+            for claim in sorted_claims:
+                mapped_ids = [
+                    old_to_simple[cid] for cid in claim.citation_ids if cid in old_to_simple
+                ]
+                if mapped_ids:
+                    simple_claims.append(
+                        claim.model_copy(update={"citation_ids": mapped_ids})
+                    )
+            if simple_claims and simple_citations:
+                simple_date_unconfirmed = {
+                    old_to_simple[cid]
+                    for cid in date_unconfirmed_ids
+                    if cid in old_to_simple
+                }
+                fallback_md = render_markdown(
+                    query=query,
+                    claims=simple_claims,
+                    citations=simple_citations,
+                    metrics=_compute_metrics(simple_claims),
+                    mode="live",
+                    date_unconfirmed_ids=simple_date_unconfirmed,
+                    n_blocked_sources=n_blocked,
+                    n_post_cutoff=n_post_cutoff,
+                    as_of_date=self._source_policy.as_of_date,
+                )
+                fallback_quality = check_report_quality(
+                    fallback_md,
+                    query=query,
+                    citations=simple_citations,
+                )
+                if fallback_quality["passed"]:
+                    md = fallback_md
+                    quality = {
+                        **fallback_quality,
+                        "repaired_with_traceable_template": True,
+                    }
         return md, quality
 
     async def build(
