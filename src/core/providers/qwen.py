@@ -124,20 +124,36 @@ class QwenProvider(BaseLLMProvider):
             client = httpx.AsyncClient(timeout=self._timeout)
             close_client = True
 
-        # 带退避的重试：全进程最多四个 Qwen 请求同时在飞。429 优先遵循
-        # Retry-After，其余瞬时错误使用指数退避和少量 jitter。
+        # ``self._timeout`` is a TOTAL deadline: queueing for the global slot,
+        # request I/O, retry backoff and retries all share the same budget. This
+        # prevents abandoned calls from starving later questions indefinitely.
         resp: httpx.Response | None = None
         last_exc: Exception | None = None
         max_attempts = self._max_retries + 1
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._timeout
         try:
             for attempt in range(max_attempts):
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise ProviderError(f"Qwen total deadline exceeded after {self._timeout:g}s")
                 try:
-                    async with _global_limiter():
-                        resp = await client.post(url, json=payload, headers=headers)
+                    async with asyncio.timeout(remaining):
+                        async with _global_limiter():
+                            resp = await client.post(url, json=payload, headers=headers)
+                except TimeoutError as e:
+                    raise ProviderError(
+                        f"Qwen total deadline exceeded after {self._timeout:g}s"
+                    ) from e
                 except httpx.TimeoutException as e:
                     last_exc = e
                     if attempt < max_attempts - 1:
-                        await asyncio.sleep(2.0**attempt + random.uniform(0.0, 0.25))
+                        delay = 2.0**attempt + random.uniform(0.0, 0.25)
+                        if delay >= deadline - loop.time():
+                            raise ProviderError(
+                                f"Qwen total deadline exceeded after {self._timeout:g}s"
+                            ) from e
+                        await asyncio.sleep(delay)
                         continue
                     raise ProviderError(
                         f"Qwen request timed out after {max_attempts} attempts: {e}"
@@ -145,7 +161,12 @@ class QwenProvider(BaseLLMProvider):
                 except httpx.HTTPError as e:
                     last_exc = e
                     if attempt < max_attempts - 1:
-                        await asyncio.sleep(2.0**attempt + random.uniform(0.0, 0.25))
+                        delay = 2.0**attempt + random.uniform(0.0, 0.25)
+                        if delay >= deadline - loop.time():
+                            raise ProviderError(
+                                f"Qwen total deadline exceeded after {self._timeout:g}s"
+                            ) from e
+                        await asyncio.sleep(delay)
                         continue
                     raise ProviderError(f"Qwen request failed: {e}") from e
 
@@ -155,13 +176,18 @@ class QwenProvider(BaseLLMProvider):
                         delay = max(0.0, float(retry_after))
                     except ValueError:
                         delay = 2.0**attempt
-                    await asyncio.sleep(delay + random.uniform(0.0, 0.25))
+                    delay += random.uniform(0.0, 0.25)
+                    if delay >= deadline - loop.time():
+                        raise ProviderError(
+                            f"Qwen total deadline exceeded after {self._timeout:g}s"
+                        )
+                    await asyncio.sleep(delay)
                     continue
                 break
         finally:
             if close_client:
                 with contextlib.suppress(Exception):
-                    await client.aclose()
+                    await asyncio.wait_for(client.aclose(), timeout=2.0)
 
         if resp is None:  # 理论上不会走到这里，防御性兜底
             raise ProviderError(f"Qwen request failed: {last_exc}")
@@ -188,6 +214,26 @@ class QwenProvider(BaseLLMProvider):
             output_tokens=completion_tokens,
             estimated=not usage_reported,
         )
+        # Native LangSmith token columns are computed from LLM runs. The active
+        # prompt span is deliberately body-free, so attach only provider usage
+        # and model metadata here (never prompts or answer text).
+        with contextlib.suppress(Exception):
+            from langsmith.run_helpers import get_current_run_tree
+
+            current_run = get_current_run_tree()
+            if current_run is not None and getattr(current_run, "run_type", "") == "llm":
+                current_run.add_outputs(
+                    {
+                        "usage_metadata": {
+                            "input_tokens": prompt_tokens,
+                            "output_tokens": completion_tokens,
+                            "total_tokens": prompt_tokens + completion_tokens,
+                        }
+                    }
+                )
+                current_run.add_metadata(
+                    {"ls_provider": self.provider_name, "ls_model_name": effective_model}
+                )
         return LLMResponse(
             text=content,
             model=data.get("model", effective_model),

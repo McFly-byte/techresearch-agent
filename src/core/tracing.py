@@ -362,6 +362,7 @@ class LangSmithTracing(TracingContext):
         if parent_tree is not None and hasattr(parent_tree, "create_child"):
             child = None
             token = None
+            caught: BaseException | None = None
             try:
                 child = parent_tree.create_child(
                     prompt_name,
@@ -381,11 +382,23 @@ class LangSmithTracing(TracingContext):
             except Exception as e:  # noqa: BLE001
                 log.warning("langsmith_llm_child_start_failed error_type=%s", type(e).__name__)
             try:
-                yield
+                if child is None:
+                    yield
+                else:
+                    from langsmith.run_helpers import tracing_context
+
+                    with tracing_context(parent=child, client=self._client, enabled=True):
+                        yield
+            except BaseException as exc:  # noqa: BLE001
+                caught = exc
+                raise
             finally:
                 if child is not None:
                     with contextlib.suppress(Exception):
-                        child.end(outputs={"status": "ok"})
+                        child.end(
+                            outputs={"status": "error" if caught is not None else "ok"},
+                            error=type(caught).__name__ if caught is not None else None,
+                        )
                         child.patch()
                 if token is not None:
                     with contextlib.suppress(Exception):
