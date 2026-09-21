@@ -29,20 +29,24 @@ evals/
 推荐命令：
 
 ```powershell
-# 先跑四题，创建唯一 Experiment；默认题目并发为 2。
+# 先跑四题，创建唯一 Experiment；题目并发 2，每题研究 worker 1。
 python -m evals.cli run `
   --dataset evals/data/deepresearch_bench_ii/tasks_and_rubrics.jsonl `
   --subset core10 --limit 4 --mode live --judge llm `
+  --concurrency 2 --research-workers 1 `
   --output-dir evals/runs/drb2_core10_live_qwen_v3
 
 # 验收后在原目录、原 Experiment 内补齐 Core10；completed 题自动跳过。
 python -m evals.cli run `
   --dataset evals/data/deepresearch_bench_ii/tasks_and_rubrics.jsonl `
   --subset core10 --mode live --judge llm `
+  --concurrency 2 --research-workers 1 `
   --output-dir evals/runs/drb2_core10_live_qwen_v3 --resume
 ```
 
 默认时限为：整题 900 秒、研究 420 秒、验证与合成 180 秒、judge 240 秒。
+默认并发为 2 道题，每题 1 个研究 worker；每题写作阶段最多并发核验 2 条声明，
+因此研究和写作阶段都不会超过全局 Qwen 4 路容量。
 这些值均可通过对应 CLI 参数覆盖。`--resume` 会核对数据集 hash 和子集元数据，
 防止把不同数据或不同 qid 清单混入同一次实验。
 

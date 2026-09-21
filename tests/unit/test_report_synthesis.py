@@ -290,7 +290,7 @@ async def test_builder_caps_and_parallelizes_claim_verification() -> None:
 
     assert len(report.claims) == 8
     assert len(verifier.calls) == 8
-    assert verifier.max_active == 4
+    assert verifier.max_active == 2
 
 
 # --- EvalRunner integration ---------------------------------------------------

@@ -103,6 +103,12 @@ def main() -> None:
     help="Maximum questions evaluated concurrently (default 2).",
 )
 @click.option(
+    "--research-workers",
+    type=click.IntRange(min=1),
+    default=1,
+    help="Maximum research workers inside each question (default 1).",
+)
+@click.option(
     "--subset",
     type=str,
     default=None,
@@ -147,6 +153,7 @@ def run(
     write_timeout: float,
     limit: int | None,
     concurrency: int,
+    research_workers: int,
     subset: str | None,
     output_dir: Path | None,
     resume: bool,
@@ -233,6 +240,9 @@ def run(
             if prior_run.get("subset", {}) != subset_metadata:
                 click.echo("resume rejected: subset metadata mismatch", err=True)
                 sys.exit(2)
+            if int(prior_run.get("research_workers", 1)) != research_workers:
+                click.echo("resume rejected: research worker count mismatch", err=True)
+                sys.exit(2)
 
     # --- Assemble runner ----------------------------------------------------
     config = CONFIGS["full"]
@@ -240,6 +250,7 @@ def run(
         mode=mode,
         research_timeout=research_timeout,
         write_timeout=write_timeout,
+        research_workers=research_workers,
     )
     judge, judge_kind_resolved, provider_model = _resolve_judge(judge_kind)
     provider = provider_model.split("/")[0]
@@ -254,7 +265,10 @@ def run(
         if experiment_name:
             exp_prefix = experiment_name
         elif subset:
-            exp_prefix = f"{config_name}-c{concurrency}-{_git_commit()[:8]}-{ts}"
+            exp_prefix = (
+                f"{config_name}-q{concurrency}-w{research_workers}-"
+                f"{_git_commit()[:8]}-{ts}"
+            )
         elif confirm_full and limit >= n_total:
             # v2 名：与旧坏结果隔离，不覆盖。
             exp_prefix = f"drb2-full-live-qwen-v2-{ts}"
@@ -271,6 +285,7 @@ def run(
             git_commit=_git_commit(),
             research_mode=mode,
             concurrency=concurrency,
+            research_workers=research_workers,
             subset_metadata=subset_metadata,
         )
         click.echo(
@@ -291,12 +306,14 @@ def run(
         judge_timeout=judge_timeout,
         question_timeout=question_timeout,
         concurrency=concurrency,
+        research_workers=research_workers,
         subset_metadata=subset_metadata,
     )
 
     click.echo(
         f"eval run: dataset={config_name} n={n_total} limit={limit} mode={mode} "
         f"judge={judge_kind_resolved} concurrency={concurrency} "
+        f"research_workers={research_workers} "
         f"question_timeout={question_timeout:g}s subset={subset or 'none'} out={out}"
     )
     import asyncio

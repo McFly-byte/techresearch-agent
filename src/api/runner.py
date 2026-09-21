@@ -203,6 +203,7 @@ class ResearchRunner:
         write_timeout: float = 180.0,
         verifier_call_timeout: float = 60.0,
         synthesis_call_timeout: float = 120.0,
+        max_workers: int | None = None,
     ) -> None:
         self._store = store
         self._memory_store = memory_store
@@ -219,6 +220,10 @@ class ResearchRunner:
         self._write_timeout = float(write_timeout)
         self._verifier_call_timeout = float(verifier_call_timeout)
         self._synthesis_call_timeout = float(synthesis_call_timeout)
+        resolved_max_workers = self._settings.max_workers if max_workers is None else max_workers
+        if resolved_max_workers < 1:
+            raise ValueError("max_workers must be >= 1")
+        self._max_workers = int(resolved_max_workers)
         # Tracing resolution (stage-0-1 boundary):
         # - Injected tracing always wins (tests inject RecordingTracing).
         # - fake mode FORCES noop tracing, regardless of any stored key or the
@@ -277,9 +282,7 @@ class ResearchRunner:
                 blocked_titles=rec.blocked_titles,
                 as_of_date=rec.as_of_date,
             )
-            graph = build_graph(
-                worker=worker, budget=budget, max_workers=self._settings.max_workers
-            )
+            graph = build_graph(worker=worker, budget=budget, max_workers=self._max_workers)
 
             self._tracing.start_span("planner", task_id=rec.task_id)
             self._emit(rec, stage="planner_start", data={})

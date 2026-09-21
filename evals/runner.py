@@ -138,6 +138,7 @@ class LangSmithExperimentSink:
         git_commit: str = "",
         research_mode: str = "live",
         concurrency: int = 1,
+        research_workers: int = 1,
         subset_metadata: dict[str, object] | None = None,
         client: Any | None = None,
     ) -> None:
@@ -151,6 +152,7 @@ class LangSmithExperimentSink:
         self._git_commit = git_commit
         self._research_mode = research_mode
         self._concurrency = max(1, int(concurrency))
+        self._research_workers = max(1, int(research_workers))
         self._subset_metadata = subset_metadata or {}
         self._enabled = False
         self._dataset_id: Any = None
@@ -217,6 +219,7 @@ class LangSmithExperimentSink:
             "research_mode": self._research_mode,
             "official_judge": "not_run (requires GPT-5.5)",
             "concurrency": self._concurrency,
+            "research_workers": self._research_workers,
             "subset": self._subset_metadata,
         }
 
@@ -276,6 +279,7 @@ class LangSmithExperimentSink:
             "judge": "qwen-nonofficial",
             "official_judge": "not_run (requires GPT-5.5)",
             "concurrency": self._concurrency,
+            "research_workers": self._research_workers,
             "timeouts": {
                 "question_seconds": runner._question_timeout,
                 "judge_seconds": runner._judge_timeout,
@@ -521,6 +525,7 @@ class EvalRunner:
         judge_timeout: float | None = None,
         question_timeout: float | None = None,
         concurrency: int = 1,
+        research_workers: int = 1,
         subset_metadata: dict[str, object] | None = None,
     ) -> None:
         self._out = out_dir
@@ -538,6 +543,7 @@ class EvalRunner:
         self._judge_timeout = judge_timeout
         self._question_timeout = question_timeout
         self._concurrency = max(1, int(concurrency))
+        self._research_workers = max(1, int(research_workers))
         self._subset_metadata = subset_metadata or {}
         # 可选的 LangSmith experiment 上传器（None 表示不上传）。
         self._experiment_sink = experiment_sink
@@ -582,6 +588,7 @@ class EvalRunner:
             "judge_timeout_seconds": self._judge_timeout,
             "question_timeout_seconds": self._question_timeout,
             "concurrency": self._concurrency,
+            "research_workers": self._research_workers,
             "subset": self._subset_metadata,
         }
         self._atomic_write_json(self._out / "config_snapshot.json", snap)

@@ -106,6 +106,35 @@ async def test_research_timeout_records_stable_error(
     assert rec.error == "research_timeout after 0.02s"
 
 
+@pytest.mark.asyncio
+async def test_research_runner_overrides_internal_worker_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, int] = {}
+
+    class EmptyGraph:
+        async def ainvoke(self, _inputs):  # type: ignore[no-untyped-def]
+            return {"facts": [], "citations": []}
+
+    def fake_build_graph(*, worker, budget, max_workers):  # type: ignore[no-untyped-def]
+        captured["max_workers"] = max_workers
+        return EmptyGraph()
+
+    monkeypatch.setattr("api.runner.build_graph", fake_build_graph)
+    settings = Settings(_env_file=None, llm_provider="fake", max_workers=6)  # type: ignore[call-arg]
+    store = TaskStore()
+    rec = store.create(query="q", user_context="", depth="quick")
+
+    await ResearchRunner(
+        store,
+        settings=settings,
+        kit=_fake_kit(settings),
+        max_workers=1,
+    ).run(rec)
+
+    assert captured["max_workers"] == 1
+
+
 def test_provider_errors_are_tool_failures() -> None:
     result = EvalResult(
         qid="q",
