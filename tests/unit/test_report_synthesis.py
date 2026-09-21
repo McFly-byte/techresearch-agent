@@ -13,6 +13,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from core.prompts import get_default_registry
 from core.providers.base import LLMResponse
 from core.tracing import noop_tracing
 from domain.models import Citation, Fact, SourceDocument, SourceKind
+from domain.verification import VerificationResult
 from service.verified_report import (
     VerifiedReportBuilder,
     check_report_quality,
@@ -249,6 +251,46 @@ async def test_builder_without_llm_uses_template_and_no_gate():
     # No synthesis -> no quality gate record; no usage.
     assert report.synthesis_quality == {}
     assert builder.last_synthesis_usage is None
+
+
+@pytest.mark.asyncio
+async def test_builder_caps_and_parallelizes_claim_verification() -> None:
+    class TrackingVerifier:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.calls: list[str] = []
+
+        async def verify(self, claim, citations, *, round_label="initial"):  # type: ignore[no-untyped-def]
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.calls.append(claim.claim_id)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            return VerificationResult(
+                claim_id=claim.claim_id,
+                verdict="entailment",
+                reason="ok",
+                round=round_label,
+            )
+
+    facts = [
+        Fact(
+            fact_id=f"f{i}",
+            claim=f"supported fact number {i}",
+            source_citation_ids=[f"src{i}"],
+        )
+        for i in range(12)
+    ]
+    citations = [_cite(f"src{i}", f"https://x.test/{i}") for i in range(12)]
+    verifier = TrackingVerifier()
+    builder = VerifiedReportBuilder(verifier=verifier)  # type: ignore[arg-type]
+
+    report = await builder.build(query="q", facts=facts, citations=citations, mode="fake")
+
+    assert len(report.claims) == 8
+    assert len(verifier.calls) == 8
+    assert verifier.max_active == 4
 
 
 # --- EvalRunner integration ---------------------------------------------------

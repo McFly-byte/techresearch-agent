@@ -329,6 +329,16 @@ class LLMFactExtractor:
             self._accepts_model_id = result
         return result
 
+    @staticmethod
+    def _provider_accepts_max_tokens(provider: Any) -> bool:
+        try:
+            params = inspect.signature(provider.acomplete).parameters
+            return "max_tokens" in params or any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+        except (TypeError, ValueError):
+            return False
+
     async def _complete_bounded(
         self,
         messages: list[Message],
@@ -368,9 +378,12 @@ class LLMFactExtractor:
         """
         commit = self._prompt_commits.get(prompt_name, "")
         with self._tracing.llm_prompt_span(prompt_name, commit):
+            kwargs: dict[str, Any] = {}
             if model_id is not None and self._provider_accepts_model_id(provider):
-                return await provider.acomplete(messages, model_id=model_id)
-            return await provider.acomplete(messages)
+                kwargs["model_id"] = model_id
+            if self._provider_accepts_max_tokens(provider):
+                kwargs["max_tokens"] = 2048
+            return await provider.acomplete(messages, **kwargs)
 
     def _build_repair_messages(
         self,

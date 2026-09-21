@@ -19,6 +19,7 @@ Stage 4 P0-5 rewrite:
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import html as _html
 import logging
@@ -49,6 +50,8 @@ _CITE_TAG_RE = re.compile(r"\[c(\d+)\]")
 _MIN_REPORT_LEN = 100
 _ECHO_WINDOW = 200
 _ECHO_RATIO = 0.8
+_MAX_VERIFICATION_CLAIMS = 8
+_MAX_VERIFICATION_CONCURRENCY = 4
 
 
 def _normalize(s: str) -> str:
@@ -439,15 +442,28 @@ class VerifiedReportBuilder:
             if missing:
                 raise ToolError(f"unknown citation ids {missing}")
 
-        claims = facts_to_claims(facts)
+        # Verification is the dominant write-stage cost. Keep a deterministic
+        # evidence-first cap and verify independent claims concurrently. Eight
+        # claims are enough for the synthesis input and fit the 180s stage budget.
+        claims = facts_to_claims(facts)[:_MAX_VERIFICATION_CLAIMS]
         results: list[VerificationResult] = []
         revision_log: list[RevisionRecord] = []
         revised: list[Claim] = []
         # Track which claims need a re-verify (contradiction/neutral).
         to_reverify: list[int] = []
 
-        for idx, claim in enumerate(claims):
-            r = await self._verifier.verify(claim, citations, round_label="initial")
+        verify_limit = asyncio.Semaphore(_MAX_VERIFICATION_CONCURRENCY)
+
+        async def _verify(claim: Claim, round_label: str) -> VerificationResult:
+            async with verify_limit:
+                return await self._verifier.verify(
+                    claim, citations, round_label=round_label
+                )
+
+        initial_results = await asyncio.gather(
+            *(_verify(claim, "initial") for claim in claims)
+        )
+        for idx, (claim, r) in enumerate(zip(claims, initial_results, strict=True)):
             results.append(r)
             if r.verdict == "entailment":
                 revised.append(
@@ -478,8 +494,10 @@ class VerifiedReportBuilder:
                         to_reverify.append(idx)
 
         # ONE re-verify round on the claims we revised (exactly 1 loop).
-        for idx in to_reverify:
-            re_result = await self._verifier.verify(revised[idx], citations, round_label="revision")
+        reverify_results = await asyncio.gather(
+            *(_verify(revised[idx], "revision") for idx in to_reverify)
+        )
+        for idx, re_result in zip(to_reverify, reverify_results, strict=True):
             results.append(re_result)
             current = revised[idx]
             if re_result.verdict == "entailment":

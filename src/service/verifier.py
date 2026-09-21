@@ -516,7 +516,16 @@ class LLMNLI:
                 self._tracing.llm_prompt_span("citation_verifier_system", sys_commit),
                 self._tracing.llm_prompt_span("citation_verifier_user", user_commit),
             ):
-                resp = await self._llm.acomplete(messages)
+                # NLI returns one tiny JSON verdict. Bounding output prevents a
+                # malformed verbose response from consuming the write budget.
+                params = inspect.signature(self._llm.acomplete).parameters
+                supports_max_tokens = "max_tokens" in params or any(
+                    p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+                )
+                if supports_max_tokens:
+                    resp = await self._llm.acomplete(messages, max_tokens=256)
+                else:
+                    resp = await self._llm.acomplete(messages)
         except NLIProviderError:
             # Re-raise our own stable errors unchanged (they already carry the
             # redacted code); the wrapping context managers close cleanly.
