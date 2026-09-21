@@ -62,6 +62,8 @@ Copy-Item .env.example .env
 ```dotenv
 DASHSCOPE_API_KEY=你的密钥
 TAVILY_API_KEY=你的密钥
+# 可选：多个 Tavily Key 用逗号分隔，支持轮询和自动故障切换
+TAVILY_API_KEYS=Key1,Key2,Key3
 LLM_PROVIDER=qwen
 ```
 

@@ -60,6 +60,12 @@
    ```
    TAVILY_API_KEY=tvly-你的Key
    ```
+   有多个 Key 时可额外配置逗号分隔的池：
+   ```
+   TAVILY_API_KEYS=tvly-Key1,tvly-Key2,tvly-Key3
+   ```
+   系统会去重后轮询使用；额度耗尽或认证失败的 Key 会在当前进程中自动熔断，
+   429、5xx 和超时会有限重试并切换到下一个 Key。
 
 ## 4. 飞书自建应用（阶段 5+ 报告导出）
 

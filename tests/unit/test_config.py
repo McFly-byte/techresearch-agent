@@ -23,6 +23,7 @@ def test_settings_loads_with_defaults(monkeypatch):  # type: ignore[no-untyped-d
         "DASHSCOPE_API_KEY",
         "LANGCHAIN_API_KEY",
         "TAVILY_API_KEY",
+        "TAVILY_API_KEYS",
         "FEISHU_APP_SECRET",
         "LLM_PROVIDER",
     ]:
@@ -69,6 +70,17 @@ def test_safe_dict_masks_secrets(monkeypatch):  # type: ignore[no-untyped-def]
     blob = repr(out)
     assert "sk-super-secret-value" not in blob
     assert "tvly-secret-value" not in blob
+
+
+def test_tavily_key_pool_combines_deduplicates_and_redacts(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "key-a")
+    monkeypatch.setenv("TAVILY_API_KEYS", "key-a,key-b; key-c\nkey-b")
+    s = Settings(_env_file=None)
+
+    assert s.tavily_key_pool() == ("key-a", "key-b", "key-c")
+    assert s.has_tavily_key is True
+    assert s.safe_dict()["tavily_api_keys"] == REDACTED
+    assert "key-b" not in repr(s.safe_dict())
 
 
 def test_secret_str_value_not_in_json(monkeypatch):  # type: ignore[no-untyped-def]

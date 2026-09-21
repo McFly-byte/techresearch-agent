@@ -20,6 +20,7 @@ def isolate_live_credentials(monkeypatch: pytest.MonkeyPatch):
         "DASHSCOPE_API_KEY",
         "LANGCHAIN_API_KEY",
         "TAVILY_API_KEY",
+        "TAVILY_API_KEYS",
         "FEISHU_APP_ID",
         "FEISHU_APP_SECRET",
         "FEISHU_FOLDER_TOKEN",

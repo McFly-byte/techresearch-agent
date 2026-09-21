@@ -12,6 +12,7 @@ Design contract (docs/技术设计文档.md ch.11):
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -28,6 +29,7 @@ SECRET_FIELD_NAMES: frozenset[str] = frozenset(
         "dashscope_api_key",
         "langchain_api_key",
         "tavily_api_key",
+        "tavily_api_keys",
         "feishu_app_secret",
     }
 )
@@ -76,6 +78,9 @@ class Settings(BaseSettings):
 
     # ---- Search ------------------------------------------------------------
     tavily_api_key: SecretStr = Field(default=SecretStr(""))
+    # Optional comma / semicolon / whitespace separated key pool.  The legacy
+    # singular key remains supported and is placed first when both are set.
+    tavily_api_keys: SecretStr = Field(default=SecretStr(""))
 
     # ---- Research execution ------------------------------------------------
     research_timeout_seconds: float = (
@@ -140,7 +145,23 @@ class Settings(BaseSettings):
 
     @property
     def has_tavily_key(self) -> bool:
-        return bool(self.tavily_api_key.get_secret_value().strip())
+        return bool(self.tavily_key_pool())
+
+    def tavily_key_pool(self) -> tuple[str, ...]:
+        """Return configured Tavily keys in stable order without duplicates."""
+        raw_values = [
+            self.tavily_api_key.get_secret_value(),
+            self.tavily_api_keys.get_secret_value(),
+        ]
+        keys: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_values:
+            for candidate in re.split(r"[,;\s]+", raw.strip()):
+                key = candidate.strip()
+                if key and key not in seen:
+                    seen.add(key)
+                    keys.append(key)
+        return tuple(keys)
 
     @property
     def has_langsmith_key(self) -> bool:

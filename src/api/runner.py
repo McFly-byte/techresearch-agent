@@ -145,7 +145,7 @@ def _live_kit(settings: Settings) -> ProviderKit:
     from tools.fetchers import HttpPageFetcher
     from tools.search_providers import TavilySearchProvider
 
-    web = TavilySearchProvider(api_key=settings.tavily_api_key.get_secret_value())
+    web = TavilySearchProvider(api_key=settings.tavily_key_pool())
     fetcher = HttpPageFetcher()
     llm = build_provider(settings=settings)
     return ProviderKit(web_search=web, fetcher=fetcher, llm=llm, mode="live")

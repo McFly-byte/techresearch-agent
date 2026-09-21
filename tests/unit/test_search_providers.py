@@ -7,7 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.exceptions import ProviderNotConfiguredError, ToolQuotaExceededError
+from core.exceptions import (
+    ProviderNotConfiguredError,
+    ToolAuthenticationError,
+    ToolQuotaExceededError,
+)
 from domain.models import SearchResult
 from tools.netutil import is_http_url, truncate
 from tools.paper_providers import FakePaperSearchProvider
@@ -66,6 +70,73 @@ async def test_tavily_usage_limit_has_stable_quota_error(
 
     with pytest.raises(ToolQuotaExceededError, match="tavily search quota exhausted"):
         await provider.search("query", max_results=1)
+
+
+@pytest.mark.asyncio
+async def test_tavily_pool_round_robins_across_provider_instances(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class Client:
+        def __init__(self, *, api_key: str):
+            self.api_key = api_key
+
+        def search(self, **_kwargs):  # type: ignore[no-untyped-def]
+            calls.append(self.api_key)
+            return {"results": []}
+
+    monkeypatch.setitem(sys.modules, "tavily", SimpleNamespace(TavilyClient=Client))
+    keys = ("round-robin-a", "round-robin-b")
+    first = TavilySearchProvider(api_key=keys)
+    second = TavilySearchProvider(api_key=keys)
+
+    await first.search("one")
+    await second.search("two")
+
+    assert calls == ["round-robin-a", "round-robin-b"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["account usage limit reached", "403 forbidden"])
+async def test_tavily_pool_disables_bad_key_and_fails_over(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    calls: list[str] = []
+
+    class Client:
+        def __init__(self, *, api_key: str):
+            self.api_key = api_key
+
+        def search(self, **_kwargs):  # type: ignore[no-untyped-def]
+            calls.append(self.api_key)
+            if self.api_key == f"bad-{failure}":
+                raise RuntimeError(failure)
+            return {"results": []}
+
+    monkeypatch.setitem(sys.modules, "tavily", SimpleNamespace(TavilyClient=Client))
+    provider = TavilySearchProvider(api_key=(f"bad-{failure}", f"good-{failure}"))
+
+    assert await provider.search("query") == []
+    assert calls == [f"bad-{failure}", f"good-{failure}"]
+
+
+@pytest.mark.asyncio
+async def test_tavily_pool_reports_auth_when_every_key_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Client:
+        def __init__(self, **_kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+        def search(self, **_kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("401 unauthorized")
+
+    monkeypatch.setitem(sys.modules, "tavily", SimpleNamespace(TavilyClient=Client))
+    provider = TavilySearchProvider(api_key=("auth-a", "auth-b"))
+
+    with pytest.raises(ToolAuthenticationError, match="credentials were rejected"):
+        await provider.search("query")
 
 
 @pytest.mark.asyncio

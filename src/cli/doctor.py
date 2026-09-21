@@ -117,7 +117,7 @@ def research(query: str, live: bool, papers: bool) -> None:
             )
         from tools.search_providers import TavilySearchProvider
 
-        web = TavilySearchProvider(api_key=s.tavily_api_key.get_secret_value())
+        web = TavilySearchProvider(api_key=s.tavily_key_pool())
         fetcher = HttpPageFetcher()
         paper = ArxivSearchProvider() if papers else None
     else:

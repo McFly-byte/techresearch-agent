@@ -75,6 +75,13 @@ class ToolQuotaExceededError(ToolError):
     error_code = "tool_quota_exhausted"
 
 
+class ToolAuthenticationError(ToolError):
+    """A tool credential was rejected or lacks permission."""
+
+    http_status = 401
+    error_code = "tool_authentication_failed"
+
+
 class TransientToolError(ToolError):
     """A retryable tool failure (5xx, rate limit, network blip)."""
 
@@ -123,6 +130,7 @@ __all__ = [
     "ProviderError",
     "ProviderNotConfiguredError",
     "ToolError",
+    "ToolAuthenticationError",
     "ToolQuotaExceededError",
     "ToolTimeoutError",
     "TRAError",

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from core.exceptions import (
+    ToolAuthenticationError,
     ToolError,
     ToolQuotaExceededError,
     ToolTimeoutError,
@@ -123,6 +124,8 @@ def classify_tool_error(exc: Exception) -> ClassifiedError:
 
     if isinstance(exc, ToolTimeoutError):
         return ClassifiedError("timeout", exc, retryable=True)
+    if isinstance(exc, ToolAuthenticationError):
+        return ClassifiedError("auth_permission", exc, retryable=False)
     if isinstance(exc, ToolQuotaExceededError):
         return ClassifiedError("quota_exhausted", exc, retryable=False)
     if isinstance(exc, TransientToolError):
