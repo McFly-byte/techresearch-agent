@@ -48,6 +48,7 @@ class QwenProvider(BaseLLMProvider):
         api_key: str,
         timeout: float = 75.0,
         max_retries: int = 1,
+        enable_thinking: bool | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.model_id = model_id
@@ -58,6 +59,7 @@ class QwenProvider(BaseLLMProvider):
         self._timeout = timeout
         # 瞬时错误（超时/连接错误/429/5xx）的重试次数；401/403 不重试。
         self._max_retries = max(0, int(max_retries))
+        self._enable_thinking = enable_thinking
         self._client = client  # injectable for tests
 
     def is_configured(self) -> bool:
@@ -76,6 +78,7 @@ class QwenProvider(BaseLLMProvider):
             api_key=self._api_key,
             timeout=self._timeout,
             max_retries=self._max_retries,
+            enable_thinking=self._enable_thinking,
             client=self._client,
         )
 
@@ -87,6 +90,19 @@ class QwenProvider(BaseLLMProvider):
             api_key=self._api_key,
             timeout=timeout,
             max_retries=self._max_retries,
+            enable_thinking=self._enable_thinking,
+            client=self._client,
+        )
+
+    def with_thinking(self, enabled: bool) -> QwenProvider:
+        """Return a clone with Qwen hybrid thinking explicitly enabled/disabled."""
+        return QwenProvider(
+            model_id=self.model_id,
+            base_url=self._base_url,
+            api_key=self._api_key,
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+            enable_thinking=bool(enabled),
             client=self._client,
         )
 
@@ -113,6 +129,8 @@ class QwenProvider(BaseLLMProvider):
         # 否则会因 finish_reason=length 被截断、解析失败。None 时不传，走服务端默认。
         if max_tokens is not None:
             payload["max_tokens"] = int(max_tokens)
+        if self._enable_thinking is not None:
+            payload["enable_thinking"] = self._enable_thinking
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",

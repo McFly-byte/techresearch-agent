@@ -468,6 +468,11 @@ class WorkerNode:
                     # Provider inherits the base (which raises) -> fall back to
                     # the request-level model_id kwarg path.
                     scoped_llm = self._llm
+            # Extraction is a bounded JSON transformation over fetched text;
+            # Qwen's default chain-of-thought adds thousands of completion
+            # tokens and frequently exhausts the 75s provider deadline.
+            if scoped_llm is not None and hasattr(scoped_llm, "with_thinking"):
+                scoped_llm = scoped_llm.with_thinking(False)
 
             new_facts: list[Fact] = []
             if docs:

@@ -40,6 +40,8 @@ def _resolve_judge(kind: str):
     from core.providers.factory import build_provider
 
     llm = build_provider()
+    if hasattr(llm, "with_thinking"):
+        llm = llm.with_thinking(False)
     settings = get_settings()
     provider_name = settings.resolved_provider()
     return LLMRubricJudge(llm=llm), "llm", f"{provider_name}/{getattr(llm, 'model_id', '')}"
@@ -105,8 +107,8 @@ def main() -> None:
 @click.option(
     "--research-workers",
     type=click.IntRange(min=1),
-    default=1,
-    help="Maximum research workers inside each question (default 1).",
+    default=2,
+    help="Maximum research workers inside each question (default 2).",
 )
 @click.option(
     "--subset",

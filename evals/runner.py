@@ -138,7 +138,7 @@ class LangSmithExperimentSink:
         git_commit: str = "",
         research_mode: str = "live",
         concurrency: int = 1,
-        research_workers: int = 1,
+        research_workers: int = 2,
         subset_metadata: dict[str, object] | None = None,
         client: Any | None = None,
     ) -> None:
@@ -525,7 +525,7 @@ class EvalRunner:
         judge_timeout: float | None = None,
         question_timeout: float | None = None,
         concurrency: int = 1,
-        research_workers: int = 1,
+        research_workers: int = 2,
         subset_metadata: dict[str, object] | None = None,
     ) -> None:
         self._out = out_dir

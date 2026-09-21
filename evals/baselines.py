@@ -77,7 +77,7 @@ def make_research_runner_answerer(
     write_timeout: float = 180.0,
     verifier_call_timeout: float = 60.0,
     synthesis_call_timeout: float = 120.0,
-    research_workers: int = 1,
+    research_workers: int = 2,
 ):
     """Build an async answerer that runs the REAL shipped research system.
 

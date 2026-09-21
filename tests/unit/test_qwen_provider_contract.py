@@ -66,6 +66,38 @@ async def test_qwen_sends_model_and_key() -> None:
 
 
 @pytest.mark.asyncio
+async def test_qwen_stage_clone_disables_thinking_without_mutating_base() -> None:
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        bodies.append(_json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "model": "qwen-test",
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    client = _client_with_handler(handler)
+    base = QwenProvider(
+        model_id="qwen-test",
+        base_url="https://dashscope.example.com",
+        api_key="sk-fake",
+        client=client,
+    )
+    await base.with_thinking(False).acomplete([Message(role="user", content="hi")])
+    await base.acomplete([Message(role="user", content="hi")])
+
+    assert bodies[0]["enable_thinking"] is False
+    assert "enable_thinking" not in bodies[1]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_qwen_attaches_native_usage_to_active_langsmith_llm_run() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(

@@ -354,6 +354,8 @@ class ResearchRunner:
                 verifier_llm = kit.llm.with_model(self._settings.qwen_verifier_model)
                 if hasattr(verifier_llm, "with_timeout"):
                     verifier_llm = verifier_llm.with_timeout(self._verifier_call_timeout)
+                if hasattr(verifier_llm, "with_thinking"):
+                    verifier_llm = verifier_llm.with_thinking(False)
                 # Pass tracing so the NLI LLM runs carry
                 # lc_hub_repo / lc_hub_commit_hash metadata and LangSmith
                 # associates citation_verifier_system / _user to the Application.
@@ -364,6 +366,8 @@ class ResearchRunner:
             synthesis_llm = kit.llm if kit.mode == "live" else None
             if synthesis_llm is not None and hasattr(synthesis_llm, "with_timeout"):
                 synthesis_llm = synthesis_llm.with_timeout(self._synthesis_call_timeout)
+            if synthesis_llm is not None and hasattr(synthesis_llm, "with_thinking"):
+                synthesis_llm = synthesis_llm.with_thinking(False)
             builder = VerifiedReportBuilder(
                 verifier=verifier,
                 blocked_urls=rec.blocked_urls,
