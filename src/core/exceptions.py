@@ -68,6 +68,13 @@ class ToolTimeoutError(ToolError):
     error_code = "tool_timeout"
 
 
+class ToolQuotaExceededError(ToolError):
+    """A tool account has exhausted its request or credit allowance."""
+
+    http_status = 429
+    error_code = "tool_quota_exhausted"
+
+
 class TransientToolError(ToolError):
     """A retryable tool failure (5xx, rate limit, network blip)."""
 
@@ -116,6 +123,7 @@ __all__ = [
     "ProviderError",
     "ProviderNotConfiguredError",
     "ToolError",
+    "ToolQuotaExceededError",
     "ToolTimeoutError",
     "TRAError",
     "TransientToolError",

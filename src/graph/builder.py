@@ -141,6 +141,15 @@ def build_graph(
         n_facts = len(state["facts"])
         already = state.get("replan_count", 0)
 
+        # Account/auth failures cannot be repaired by rephrasing the query.
+        # Stop before creating another paid/search attempt.
+        terminal_provider_failure = any(
+            t.stop_reason in {"quota_exhausted", "auth_permission"}
+            for t in state["subtasks"]
+        )
+        if terminal_provider_failure:
+            return Command(goto="writer")
+
         # Boundary 7 + 4: the check-can-replan -> record-replan critical section
         # runs under the budget lock so concurrent replan requests cannot exceed
         # the cap.

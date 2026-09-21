@@ -17,6 +17,7 @@ from typing import Literal
 
 from core.exceptions import (
     ToolError,
+    ToolQuotaExceededError,
     ToolTimeoutError,
     TransientToolError,
 )
@@ -25,6 +26,7 @@ ErrorCategory = Literal[
     "timeout",
     "transient_network",
     "rate_limit",
+    "quota_exhausted",
     "auth_permission",
     "parse_error",
     "permanent_fetch",
@@ -121,6 +123,8 @@ def classify_tool_error(exc: Exception) -> ClassifiedError:
 
     if isinstance(exc, ToolTimeoutError):
         return ClassifiedError("timeout", exc, retryable=True)
+    if isinstance(exc, ToolQuotaExceededError):
+        return ClassifiedError("quota_exhausted", exc, retryable=False)
     if isinstance(exc, TransientToolError):
         # 429 / 5xx / connection reset -> transient
         return ClassifiedError("transient_network", exc, retryable=True)

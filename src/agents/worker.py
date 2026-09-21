@@ -348,16 +348,22 @@ class WorkerNode:
                     self._web.search(search_query, max_results=self._max_results)
                 )
             except Exception as e:  # classify, don't crash
-                self._tracing.end_span("search", task_id=task_id, status="error", error=e)
                 ce = classify_tool_error(e)
+                self._tracing.end_span(
+                    "search",
+                    task_id=task_id,
+                    status="error",
+                    error=e,
+                    stop_reason=ce.category,
+                )
                 # Boundary 6: NEVER put the raw exception text into errors[].
                 errors.append(
                     f"{task_id}:error_code={ce.category} error_type={type(ce.original).__name__}"
                 )
-                if ce.category in {"auth_permission", "cancelled"}:
+                if ce.category in {"auth_permission", "quota_exhausted", "cancelled"}:
                     return self._terminal_command(
                         task,
-                        status="failed" if ce.category == "auth_permission" else "cancelled",
+                        status="cancelled" if ce.category == "cancelled" else "failed",
                         stop_reason=ce.category,
                         errors=errors,
                         facts=all_facts,
@@ -645,6 +651,7 @@ def _status_for(stop_reason: str, *, had_facts: bool) -> str:
         return "partial" if had_facts else "failed"
     if stop_reason in {
         "auth_permission",
+        "quota_exhausted",
         "consecutive_failures",
         "input_too_long",
         "task_budget_exhausted",

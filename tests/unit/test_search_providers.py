@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 
-from core.exceptions import ProviderNotConfiguredError
+from core.exceptions import ProviderNotConfiguredError, ToolQuotaExceededError
 from domain.models import SearchResult
 from tools.netutil import is_http_url, truncate
 from tools.paper_providers import FakePaperSearchProvider
@@ -45,6 +48,24 @@ async def test_fake_search_no_match():  # type: ignore[no-untyped-def]
 def test_tavily_provider_requires_key():  # type: ignore[no-untyped-def]
     with pytest.raises(ProviderNotConfiguredError):
         TavilySearchProvider(api_key="")
+
+
+@pytest.mark.asyncio
+async def test_tavily_usage_limit_has_stable_quota_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Client:
+        def __init__(self, **_kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+        def search(self, **_kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("account usage limit reached; private provider text")
+
+    monkeypatch.setitem(sys.modules, "tavily", SimpleNamespace(TavilyClient=Client))
+    provider = TavilySearchProvider(api_key="not-a-real-key")
+
+    with pytest.raises(ToolQuotaExceededError, match="tavily search quota exhausted"):
+        await provider.search("query", max_results=1)
 
 
 @pytest.mark.asyncio

@@ -32,6 +32,8 @@ def classify_failure(result: EvalResult) -> str:
             "providererror",
             "provider_error",
             "provider failure",
+            "quota_exhausted",
+            "usage limit",
         )
     ):
         return "tool_failure"

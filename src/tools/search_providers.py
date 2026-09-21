@@ -8,7 +8,12 @@ import weakref
 from typing import Any
 
 from core.config import Settings
-from core.exceptions import ProviderNotConfiguredError, ToolError, TransientToolError
+from core.exceptions import (
+    ProviderNotConfiguredError,
+    ToolError,
+    ToolQuotaExceededError,
+    TransientToolError,
+)
 from domain.models import SearchResult
 
 log = logging.getLogger(__name__)
@@ -75,6 +80,17 @@ class TavilySearchProvider:
             except Exception as e:  # tavily raises generic RuntimeError on 4xx/5xx
                 last_exc = e
                 msg = str(e).lower()
+                quota_exhausted = any(
+                    marker in msg
+                    for marker in (
+                        "usage limit",
+                        "quota",
+                        "credit limit",
+                        "credits exhausted",
+                    )
+                )
+                if quota_exhausted:
+                    raise ToolQuotaExceededError("tavily search quota exhausted") from e
                 retryable = any(t in msg for t in ("429", "502", "503", "504", "timeout", "rate"))
                 if not retryable or attempt >= MAX_RETRIES:
                     raise ToolError(f"tavily search failed: {e}") from e

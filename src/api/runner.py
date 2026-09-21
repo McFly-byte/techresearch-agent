@@ -318,7 +318,15 @@ class ResearchRunner:
             # P0 guard: empty facts/citations is NOT success.
             if not facts or not citations:
                 rec.status = "failed"
-                rec.error = "empty_result: no facts/citations produced"
+                stop_reasons = {
+                    getattr(st, "stop_reason", "") for st in result.get("subtasks", [])
+                }
+                if "quota_exhausted" in stop_reasons:
+                    rec.error = "search_quota_exhausted: no facts/citations produced"
+                elif "auth_permission" in stop_reasons:
+                    rec.error = "search_auth_permission: no facts/citations produced"
+                else:
+                    rec.error = "empty_result: no facts/citations produced"
                 self._emit(
                     rec,
                     event_type="error",

@@ -5,7 +5,7 @@ from __future__ import annotations
 from agents.budget import BudgetManager, TokenUsage
 from agents.errors import backoff_seconds, classify_tool_error
 from agents.reflection import decide_reflection
-from core.exceptions import ToolTimeoutError, TransientToolError
+from core.exceptions import ToolQuotaExceededError, ToolTimeoutError, TransientToolError
 
 
 # --- reflection ------------------------------------------------------------
@@ -102,6 +102,12 @@ def test_classify_rate_limit():  # type: ignore[no-untyped-def]
     ce = classify_tool_error(RuntimeError("429 Too Many Requests"))
     assert ce.category == "rate_limit"
     assert ce.retryable is True
+
+
+def test_classify_quota_exhaustion_does_not_retry():  # type: ignore[no-untyped-def]
+    ce = classify_tool_error(ToolQuotaExceededError("safe stable message"))
+    assert ce.category == "quota_exhausted"
+    assert ce.retryable is False
 
 
 def test_classify_auth_no_retry():  # type: ignore[no-untyped-def]
