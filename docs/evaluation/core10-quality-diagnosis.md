@@ -138,3 +138,5 @@ VerifiedReportBuilder 旧逻辑仅取 `facts_to_claims(facts)[:8]`。并发 fact
 并发控制复核还发现旧 Key 池只有全局并发 4，没有 per-key 单飞保证。现已增加每 Key 独立互斥锁，并验证同 Key 最大并发为 1、不同 Key 仍可并行；锁等待后会重查熔断状态。该修复消除了一个可能的账户压力因素，但现有错误只能直接支持“账户被 Tavily 停用”，不能支持“并发导致停用”的因果结论。
 
 使用 per-key 单飞提交 `53de2cb` 重试的 Core4 v4 仍在 11.86 秒内 0/4：两题直接 `search_auth_permission`，另外两题在共享池熔断后为空结果，Token=0。说明当前阻塞发生在研究和模型调用之前；锁没有被绕过，但也无法恢复已经停用的服务端账户。
+
+随后提交 `42868e1` 将 `tavily_search_sub_api` 作为固定子模块集成，并由主项目代理适配器把泛化的池耗尽响应结合脱敏 `/accounts` 状态还原为鉴权、额度或瞬态错误。本地代理固定为回环地址、单进程、每 Key 并发 1。最新五个槽位在代理 `/usage` 预热时均返回 401，官方 SDK 对首个槽位复核为关联账户已停用；主项目因此快速抛出脱敏 `ToolAuthenticationError`，未新建无效 Core4 Experiment。替换有效 Key 后应新建 Core4 目录继续，而不是 resume 任一 0/4 的失败目录。

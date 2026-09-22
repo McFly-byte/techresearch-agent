@@ -174,3 +174,9 @@ v2/v3 Experiment：
 **Core4 全失败是否说明改造失败？** 不能。所有题在搜索阶段遭遇同一个外部认证错误，没有进入可评价的 evidence/synthesis/Judge 链路。它说明 pilot 门禁和错误分类需要加强，但不提供质量改造的正负证据。
 
 **何时才运行 Full132？** 先恢复凭据，通过固定 Core4；再通过干净 Core10 的完成率、trace、Token、超时和本地/LangSmith 对齐门禁。只有小样本结果显示质量收益值得放大时，才承担 Full132 的时间与调用成本。
+
+## 14. Tavily 本地代理集成（2026-09-22）
+
+提交 `42868e1` 将第三方 `tavily_search_sub_api` 以固定 Git 子模块接入，并在主项目增加了独立代理适配器、安全启动封装和稳定错误映射。代理固定监听 `127.0.0.1`、单进程运行、每个 Key 最大并发为 1；`.env` 中的 Key 只会原子同步到被 Git 忽略的 `key.txt`，不会进入日志或提交。主项目不负责判断 Key 来源，只负责把代理返回的“全部鉴权失败”“全部额度耗尽”“全部冷却/繁忙”和“上游不可用”分别映射为可审计的异常类型。
+
+验证包括第三方仓库 `110 passed, 1 skipped`，主项目 `561 passed`，Ruff 全部通过，mypy 107 个源文件无问题。真实链路已经跑通到错误边界：代理对五个槽位的 `/usage` 均收到 401，随后主项目请求 `/search` 得到 `all_tavily_accounts_exhausted`；适配器读取脱敏 `/accounts` 状态后准确抛出 `ToolAuthenticationError: tavily proxy rejected all upstream credentials`。另用官方 Tavily SDK 对第一个槽位复核，原始原因是关联账户已停用。因此没有创建新的失败 Core4 Experiment；代理保持本机运行，替换 Key 后执行 `scripts/tavily-proxy.ps1 start` 即会重新同步并热加载，随后从新的 Core4 目录继续。
