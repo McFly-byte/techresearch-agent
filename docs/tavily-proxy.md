@@ -43,6 +43,8 @@ TAVILY_PROXY_ERROR_FILE=vendor/tavily_search_sub_api/error_key.txt
 
 当连续失败的 Key 已从活动池移入 `error_key.txt`、导致 `/accounts` 为空时，适配器
 只读取隔离记录的 `reason` 字段继续分类；不会读取、记录或返回其中的 `api_key`。
+代理返回 `all_tavily_accounts_busy`、冷却或连接池繁忙时，适配器会遵循
+`retry-after`，在单次搜索超时预算内有界等待；预算耗尽后才抛出瞬态错误。
 
 第三方服务不校验调用方 Authorization，并提供可写入 Key 的管理接口，因此只能监听
 本机回环地址。不要把端口映射到公网，也不要提交 `key.txt`、`error_key.txt` 或

@@ -300,24 +300,37 @@ class TavilyProxySearchProvider:
 
     async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
         try:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + self._timeout
             async with httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=self._timeout,
                 transport=self._transport,
             ) as client:
-                response = await client.post(
-                    "/search",
-                    headers={"Authorization": "Bearer local-tavily-proxy-client"},
-                    json={
-                        "query": query,
-                        "max_results": max_results,
-                        "search_depth": "basic",
-                        "include_answer": False,
-                    },
-                )
-                if response.is_success:
-                    return _search_results(response.json())
-                await self._raise_proxy_error(client, response)
+                while True:
+                    response = await client.post(
+                        "/search",
+                        headers={"Authorization": "Bearer local-tavily-proxy-client"},
+                        json={
+                            "query": query,
+                            "max_results": max_results,
+                            "search_depth": "basic",
+                            "include_answer": False,
+                        },
+                    )
+                    if response.is_success:
+                        return _search_results(response.json())
+                    code, _ = _proxy_error_details(response)
+                    if code in {
+                        "all_tavily_accounts_busy",
+                        "all_tavily_accounts_cooling_down",
+                        "tavily_upstream_pool_busy",
+                    }:
+                        delay = _proxy_retry_delay(response)
+                        if loop.time() + delay < deadline:
+                            await asyncio.sleep(delay)
+                            continue
+                    await self._raise_proxy_error(client, response)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             raise TransientToolError(
                 "tavily proxy is temporarily unreachable"
@@ -374,6 +387,14 @@ def _proxy_error_details(response: httpx.Response) -> tuple[str, str]:
     if not isinstance(error, dict):
         return "", ""
     return str(error.get("code", "")), str(error.get("message", ""))
+
+
+def _proxy_retry_delay(response: httpx.Response) -> float:
+    try:
+        requested = float(response.headers.get("retry-after", "1"))
+    except ValueError:
+        requested = 1.0
+    return min(2.0, max(0.05, requested))
 
 
 async def _raise_exhausted_proxy_pool(

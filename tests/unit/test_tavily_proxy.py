@@ -103,11 +103,34 @@ async def test_proxy_busy_is_transient_and_actionable() -> None:
         )
 
     provider = TavilyProxySearchProvider(
-        "http://proxy.local", transport=httpx.MockTransport(handler)
+        "http://proxy.local", timeout=0.01, transport=httpx.MockTransport(handler)
     )
 
     with pytest.raises(TransientToolError, match="all keys busy; retry_after=1s"):
         await provider.search("query")
+
+
+@pytest.mark.asyncio
+async def test_proxy_busy_waits_within_budget_then_succeeds() -> None:
+    calls = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                503,
+                headers={"retry-after": "0"},
+                json={"error": {"code": "all_tavily_accounts_busy", "message": "busy"}},
+            )
+        return httpx.Response(200, json={"results": []})
+
+    provider = TavilyProxySearchProvider(
+        "http://proxy.local", timeout=1.0, transport=httpx.MockTransport(handler)
+    )
+
+    assert await provider.search("query") == []
+    assert calls == 2
 
 
 @pytest.mark.asyncio
