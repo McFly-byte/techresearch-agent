@@ -11,6 +11,7 @@ from core.exceptions import (
     ProviderNotConfiguredError,
     ToolAuthenticationError,
     ToolQuotaExceededError,
+    TransientToolError,
 )
 from domain.models import SearchResult
 from tools.netutil import is_http_url, truncate
@@ -163,6 +164,32 @@ async def test_tavily_pool_recognizes_sdk_invalid_api_key_error(
     with pytest.raises(ToolAuthenticationError, match="credentials were rejected"):
         await provider.search("query")
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_tavily_pool_classifies_sdk_ssl_error_as_transient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    class SSLError(Exception):
+        pass
+
+    class Client:
+        def __init__(self, **_kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+        def search(self, **_kwargs):  # type: ignore[no-untyped-def]
+            nonlocal calls
+            calls += 1
+            raise SSLError()
+
+    monkeypatch.setitem(sys.modules, "tavily", SimpleNamespace(TavilyClient=Client))
+    provider = TavilySearchProvider(api_key=("ssl-a", "ssl-b"))
+
+    with pytest.raises(TransientToolError, match="temporarily unavailable"):
+        await provider.search("query")
+    assert calls == 4
 
 
 @pytest.mark.asyncio

@@ -168,7 +168,11 @@ class TavilySearchProvider:
                         rotate = True
                         break
                     retryable = any(
-                        marker in msg for marker in ("429", "502", "503", "504", "timeout", "rate")
+                        marker in msg
+                        for marker in ("429", "502", "503", "504", "timeout", "rate")
+                    ) or any(
+                        marker in error_type
+                        for marker in ("timeout", "connectionerror", "sslerror", "proxyerror")
                     )
                     if retryable:
                         saw_transient = True
