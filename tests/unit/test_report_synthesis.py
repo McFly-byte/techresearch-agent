@@ -233,6 +233,36 @@ async def test_builder_repairs_untraceable_synthesis_with_verified_template():
 
 
 @pytest.mark.asyncio
+async def test_builder_repairs_untraceable_synthesis_for_long_query():
+    fetcher = _FakeFetcher(
+        {"https://x.test/page": "LangGraph is a graph of nodes with typed state."}
+    )
+    facts, citations = _facts_and_citations()
+    invalid_report = (
+        "# Research report\n\n"
+        + "A sufficiently detailed report grounded in the supplied evidence. " * 8
+        + "Unsupported citation marker [c99]."
+    )
+    builder = VerifiedReportBuilder(
+        verifier=CitationVerifier(fetcher=fetcher),
+        llm_provider=_ScriptedLLM(invalid_report),
+        tracing=noop_tracing(),
+    )
+    long_query = "Compare the requested systems using every listed requirement. " * 50
+
+    report = await builder.build(
+        query=long_query, facts=facts, citations=citations, mode="live"
+    )
+
+    assert report.synthesis_quality["passed"] is True
+    assert report.synthesis_quality["not_prompt_echo"] is True
+    assert report.synthesis_quality["repaired_with_traceable_template"] is True
+    assert report.markdown.startswith("# 调研报告：Research findings (citation-repaired)")
+    assert "[c1]" in report.markdown
+    assert "[c99]" not in report.markdown
+
+
+@pytest.mark.asyncio
 async def test_builder_synthesis_failure_records_failed_quality():
     fetcher = _FakeFetcher(
         {"https://x.test/page": "LangGraph is a graph of nodes with typed state."}

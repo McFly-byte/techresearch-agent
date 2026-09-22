@@ -58,6 +58,20 @@ def _normalize(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip()).lower()
 
 
+def _citation_repair_title(query: str) -> str:
+    """Return an echo-safe title for the deterministic citation fallback.
+
+    DRB2 questions can be thousands of characters long.  Passing the entire
+    question back to ``render_markdown`` makes its heading occupy the quality
+    gate's full comparison window, so a valid citation repair is mistaken for
+    a prompt echo.  The claims still answer the original query; only the
+    fallback presentation title is shortened here.
+    """
+    if re.search(r"[\u3400-\u9fff]", query or ""):
+        return "研究结论（引用修复版）"
+    return "Research findings (citation-repaired)"
+
+
 def _looks_like_prompt_echo(report_md: str, query: str) -> bool:
     """True when the report just restates the user question.
 
@@ -512,7 +526,7 @@ class VerifiedReportBuilder:
                     if cid in old_to_simple
                 }
                 fallback_md = render_markdown(
-                    query=query,
+                    query=_citation_repair_title(query),
                     claims=simple_claims,
                     citations=simple_citations,
                     metrics=_compute_metrics(simple_claims),
