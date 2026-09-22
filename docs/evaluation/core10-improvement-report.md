@@ -66,15 +66,15 @@ VerifiedReportBuilder 在不同 `source_task_id` 间轮询、去重后选择最�
 | `src/service/verified_report.py` | 跨任务均衡选证据、验证、生成 coverage matrix 与报告 |
 | `src/api/runner.py`、`src/api/task_store.py` | 返回并持久化 coverage matrix |
 | `evals/runner.py` | 保存 coverage matrix，创建零模型调用 final snapshot |
-| `src/tools/search_providers.py` | 将 SDK 的无效 Key 异常归类为认证失败并快速熔断 |
+| `src/tools/search_providers.py` | 认证快速熔断、TLS 瞬态分类、全局限流与每 Key 单飞锁 |
 
 ## 6. 离线验证
 
-新增行为测试覆盖：长问题 query 唯一性、隐藏 rubric/reference 尾部不参与规划、extractor 收到子任务 scope、跨任务轮询选证据、coverage matrix 链路、final snapshot 不产生模型调用，以及空消息 `InvalidAPIKeyError` 的异常类型识别。
+新增行为测试覆盖：长问题 query 唯一性、隐藏 rubric/reference 尾部不参与规划、extractor 收到子任务 scope、跨任务轮询选证据、coverage matrix 链路、final snapshot 不产生模型调用、空消息 `InvalidAPIKeyError` 的异常类型识别，以及“同 Key 串行、不同 Key 并行”的并发约束。
 
 截至本报告提交前：
 
-- 全量 pytest：552 passed in 16.93s（包含长问题引用修复和 SDK TLS 瞬态错误分类回归测试）。
+- 全量 pytest：555 passed in 18.33s（包含长问题引用修复、SDK TLS 瞬态错误分类、每 Key 单飞和熔断等待者错误传播测试）。
 - 搜索提供方专项：12 passed。
 - Ruff：通过。
 - mypy：100 个源文件无问题。
@@ -113,6 +113,8 @@ Trace 中 64 次搜索调用有 39 次 permanent fetch/tool failure、24 次 tra
 - 已将引用修复版标题改为短、语言匹配且不复述问题的固定标题，并增加长问题回归测试；全量测试增至 551 项。
 
 修复后以独立目录 `drb2_core4_coverage_v3` 再次从零运行，但在 28.84 秒内 4/4 retrieval failure：task7、task8 明确为 `search_auth_permission`，另两题因共享 Key 池被熔断而没有 facts/citations。逐 Key 复查表明，Key 1、2、3、5 已返回 Tavily 原始 `InvalidAPIKeyError: The account associated with this API key has been deactivated`；Key 4 连续返回 TLS `UNEXPECTED_EOF`，也无法通过健康门禁。代码同时补充了 SDK `SSLError`/连接错误的瞬态分类与有限重试，避免把 TLS 故障误记为永久抓取失败。故没有继续 Core10。
+
+并发审计发现此前只有进程级总并发 4 和轮询选 Key，没有严格保证同一 Key 同时只被一个请求使用。现已为每个 Key 增加跨 Provider 实例共享的 `asyncio.Lock`：同一 Key 的整段重试过程串行，不同 Key 仍可并行；等待 Key 时不占用全局 Tavily 请求槽；获得锁后再次检查熔断状态，避免排队请求重用刚失效的 Key。熔断原因也保存在共享池中，使等待者继承同一脱敏 `auth/quota` 错误。离线并发测试测得每 Key 最大并发为 1、两 Key 总并发为 2，且三个并发等待者只调用失效 Key 一次。现有 trace 只能证明账户被停用，不能证明停用一定由并发导致；由于当前 Key 已失效，该假设仍需下一批健康 Key 做 Core4 v4 在线验证。
 
 v2/v3 Experiment：
 
