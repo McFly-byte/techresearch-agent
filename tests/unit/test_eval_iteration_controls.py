@@ -158,3 +158,67 @@ def test_experiment_manifest_reuses_exact_project(tmp_path: Path) -> None:
     assert client.read == 1
     persisted = json.loads((tmp_path / "experiment.json").read_text(encoding="utf-8"))
     assert persisted["concurrency"] == 2
+
+
+@pytest.mark.asyncio
+async def test_final_snapshot_replays_cached_results_without_model_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _DatasetClient()
+    sink = LangSmithExperimentSink(
+        experiment_prefix="core10-experiment",
+        dataset_name="dataset",
+        dataset_hash="dataset-hash",
+        client=client,
+    )
+    question = EvalQuestion(qid="q1", question="question", reference_answer="")
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+    (result_dir / "q1.json").write_text(
+        json.dumps(
+            {
+                "qid": "q1",
+                "status": "completed",
+                "answer": "cached answer",
+                "judge_score": 0.25,
+                "judge_reason": "1/4",
+                "judge_detail": "[]",
+                "attempt": 2,
+                "total_tokens": 123,
+                "run_id": "source-run",
+                "trace_id": "source-trace",
+                "trace_url": "https://smith.example/trace/source-trace",
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed: dict[str, object] = {}
+
+    async def fake_aevaluate(target, *, data, evaluators, **_kwargs):  # type: ignore[no-untyped-def]
+        outputs = await target(data[0].inputs)
+        observed.update(outputs)
+        feedback = evaluators[0](SimpleNamespace(outputs=outputs), data[0])
+        assert feedback["score"] == 0.25
+
+        class Results:
+            experiment_name = "core10-experiment-final"
+
+            async def get_comparison_url(self):  # type: ignore[no-untyped-def]
+                return "https://smith.example/final"
+
+        return Results()
+
+    monkeypatch.setattr("langsmith.evaluation.aevaluate", fake_aevaluate)
+    manifest = await sink.publish_final_snapshot(
+        out=tmp_path,
+        questions=[question],
+        source_experiment={"experiment_id": "source-experiment"},
+    )
+
+    assert observed["output"] == "cached answer"
+    assert observed["source_trace_id"] == "source-trace"
+    assert manifest["zero_model_calls"] is True
+    assert manifest["qids"] == ["q1"]
+    assert (tmp_path / "experiment_url.txt").read_text(encoding="utf-8").strip() == (
+        "https://smith.example/final"
+    )

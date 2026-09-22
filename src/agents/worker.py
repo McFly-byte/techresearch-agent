@@ -270,8 +270,11 @@ class WorkerNode:
 
     async def run_task(self, task: SubTask, *, user_context: str = "") -> Command:
         task_id = task.task_id
-        base_query = task.description or task.title
+        base_query = task.search_query or task.description or task.title
         current_query = base_query
+        extraction_scope = task.description.strip()
+        if user_context.strip():
+            extraction_scope = f"{extraction_scope}\nUser context: {user_context.strip()}".strip()
 
         all_facts: list[Fact] = []
         all_citations: list[Citation] = []
@@ -504,7 +507,7 @@ class WorkerNode:
                     ext_result, cancelled = await self._await_cancellable(
                         self._extract(
                             docs,
-                            user_context=user_context,
+                            user_context=extraction_scope,
                             model_id=model_id,
                             llm=scoped_llm,
                         )

@@ -50,7 +50,7 @@ _CITE_TAG_RE = re.compile(r"\[c(\d+)\]")
 _MIN_REPORT_LEN = 100
 _ECHO_WINDOW = 200
 _ECHO_RATIO = 0.8
-_MAX_VERIFICATION_CLAIMS = 8
+_MAX_VERIFICATION_CLAIMS = 16
 _MAX_VERIFICATION_CONCURRENCY = 2
 
 
@@ -138,6 +138,9 @@ class VerifiedReport:
     # e.g. fake mode). When populated, "passed" decides whether the runner
     # marks the task failed.
     synthesis_quality: dict = field(default_factory=dict)
+    # Question-derived requirement -> task/query -> evidence -> final claim
+    # mapping. It is JSON-serializable and safe to persist/resume.
+    coverage_matrix: list[dict[str, object]] = field(default_factory=list)
 
 
 def facts_to_claims(facts: list[Fact]) -> list[Claim]:
@@ -148,12 +151,52 @@ def facts_to_claims(facts: list[Fact]) -> list[Claim]:
             Claim(
                 claim_id=f"c{i}",
                 claim_text=f.claim,
-                section_id="body",
+                section_id=f.source_task_id or "body",
                 citation_ids=list(f.source_citation_ids),
                 claim_type="factual",
             )
         )
     return out
+
+
+def select_facts_for_coverage(facts: list[Fact], *, limit: int) -> list[Fact]:
+    """Select diverse evidence round-robin across research subtasks.
+
+    The old prefix slice favored whichever worker's fact ids sorted first. A
+    deterministic round-robin keeps at least one evidence slot per coverage
+    task before taking a second fact from any task. Duplicate claim text is
+    removed because re-verifying it adds cost without improving coverage.
+    """
+
+    groups: dict[str, list[Fact]] = {}
+    order: list[str] = []
+    seen_claims: set[str] = set()
+    for fact in facts:
+        normalized = re.sub(r"\s+", " ", fact.claim).strip().casefold()
+        if not normalized or normalized in seen_claims:
+            continue
+        seen_claims.add(normalized)
+        key = fact.source_task_id or "unscoped"
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(fact)
+
+    selected: list[Fact] = []
+    offset = 0
+    while len(selected) < limit:
+        added = False
+        for key in order:
+            bucket = groups[key]
+            if offset < len(bucket):
+                selected.append(bucket[offset])
+                added = True
+                if len(selected) >= limit:
+                    break
+        if not added:
+            break
+        offset += 1
+    return selected
 
 
 class RevisionPolicy:
@@ -299,6 +342,7 @@ class VerifiedReportBuilder:
         date_unconfirmed_ids: set[str],
         n_blocked: int,
         n_post_cutoff: int,
+        coverage_plan: list[dict[str, object]],
     ) -> tuple[str, dict]:
         """Synthesize a structured research report with the LLM.
 
@@ -312,10 +356,10 @@ class VerifiedReportBuilder:
         # Synthesis sends query + facts + citations to the LLM.  A long DRB2
         # question (≈2k chars) plus 20+ facts and 20+ citations can exceed
         # 15k chars, which causes Qwen to time out even at 300s.  Truncate to
-        # a safe budget: top-15 facts, only citations referenced by those facts,
+        # a safe budget: top-16 facts, only citations referenced by those facts,
         # each field length-capped.
-        _MAX_FACTS = 15
-        _MAX_CITATIONS = 15
+        _MAX_FACTS = 16
+        _MAX_CITATIONS = 16
         _FACT_CHARS = 300
         _CITE_TITLE_CHARS = 200
 
@@ -347,6 +391,13 @@ class VerifiedReportBuilder:
             title = (cit.title or cit.locator or "")[:_CITE_TITLE_CHARS]
             simple_citations.append(cit.model_copy(update={"citation_id": sid, "title": title}))
 
+        requirement_ids_by_task: dict[str, list[str]] = {}
+        for item in coverage_plan:
+            task_id = str(item.get("task_id", ""))
+            rid = str(item.get("requirement_id", ""))
+            if task_id and rid:
+                requirement_ids_by_task.setdefault(task_id, []).append(rid)
+
         facts_lines: list[str] = []
         for seq, c in enumerate(sorted_claims, start=1):
             sids = [
@@ -360,7 +411,12 @@ class VerifiedReportBuilder:
                 "refetch_failed": "evidence_unavailable",
             }.get(c.verification_status, c.verification_status)
             claim_text = c.claim_text[:_FACT_CHARS]
-            facts_lines.append(f"{seq}. {claim_text} [{', '.join(sids)}]  (status: {status_label})")
+            coverage_ids = requirement_ids_by_task.get(c.section_id, [])
+            coverage_label = f" covers={','.join(coverage_ids)}" if coverage_ids else ""
+            facts_lines.append(
+                f"{seq}. {claim_text} [{', '.join(sids)}]  "
+                f"(status: {status_label}{coverage_label})"
+            )
         verified_facts_block = "\n".join(facts_lines) if facts_lines else "(no verified facts)"
         citations_block = "\n".join(
             f"[{cit.citation_id}] {cit.title or cit.locator} — {cit.locator}"
@@ -383,6 +439,17 @@ class VerifiedReportBuilder:
         if date_unconfirmed_ids:
             cons.append(
                 "- Some sources have unconfirmed publication dates; phrase claims carefully."
+            )
+        if coverage_plan:
+            checklist = "\n".join(
+                f"  - {item.get('requirement_id')}: {str(item.get('requirement', ''))[:300]}"
+                for item in coverage_plan
+            )
+            cons.append(
+                "- Question-derived coverage checklist (not judge rubrics):\n"
+                f"{checklist}\n"
+                "  Answer every item in order using the mapped checked facts. "
+                "If an item still lacks evidence, state that specific gap once."
             )
         cons.append("- Write the report in the SAME language as the user question.")
         constraints_block = "\n".join(cons)
@@ -413,7 +480,7 @@ class VerifiedReportBuilder:
             self._tracing.llm_prompt_span("report_synthesis_system", sys_commit),
             self._tracing.llm_prompt_span("report_synthesis_user", user_commit),
         ):
-            resp = await self._llm_provider.acomplete(messages, max_tokens=2048)
+            resp = await self._llm_provider.acomplete(messages, max_tokens=3072)
         self.last_synthesis_usage = resp
         md = (resp.text or "").strip()
         quality = check_report_quality(md, query=query, citations=simple_citations)
@@ -475,7 +542,9 @@ class VerifiedReportBuilder:
         facts: list[Fact],
         citations: list[Citation],
         mode: str = "live",
+        coverage_plan: list[dict[str, object]] | None = None,
     ) -> VerifiedReport:
+        coverage_plan = list(coverage_plan or [])
         # Source gate (DRB2): drop blocked-source citations and post-cutoff
         # material BEFORE verification so the verifier never even sees a
         # forbidden source. Facts that lose all their supporting citations are
@@ -494,7 +563,10 @@ class VerifiedReportBuilder:
         # Verification is the dominant write-stage cost. Keep a deterministic
         # evidence-first cap and verify independent claims concurrently. Eight
         # claims are enough for the synthesis input and fit the 180s stage budget.
-        claims = facts_to_claims(facts)[:_MAX_VERIFICATION_CLAIMS]
+        selected_facts = select_facts_for_coverage(
+            facts, limit=_MAX_VERIFICATION_CLAIMS
+        )
+        claims = facts_to_claims(selected_facts)
         results: list[VerificationResult] = []
         revision_log: list[RevisionRecord] = []
         revised: list[Claim] = []
@@ -583,6 +655,7 @@ class VerifiedReportBuilder:
                     date_unconfirmed_ids=date_unconfirmed_ids,
                     n_blocked=n_blocked,
                     n_post_cutoff=n_post_cutoff,
+                    coverage_plan=coverage_plan,
                 )
             except Exception as e:  # noqa: BLE001
                 # A synthesis outage must not crash the run: fall back to the
@@ -628,6 +701,40 @@ class VerifiedReportBuilder:
                 n_post_cutoff=n_post_cutoff,
                 as_of_date=self._source_policy.as_of_date,
             )
+        claim_by_task: dict[str, list[Claim]] = {}
+        for claim in revised:
+            claim_by_task.setdefault(claim.section_id, []).append(claim)
+        fact_ids_by_task: dict[str, list[str]] = {}
+        citations_by_task: dict[str, set[str]] = {}
+        for fact in selected_facts:
+            task_id = fact.source_task_id or "unscoped"
+            fact_ids_by_task.setdefault(task_id, []).append(fact.fact_id)
+            citations_by_task.setdefault(task_id, set()).update(fact.source_citation_ids)
+        coverage_matrix: list[dict[str, object]] = []
+        for item in coverage_plan:
+            task_id = str(item.get("task_id", ""))
+            task_claims = claim_by_task.get(task_id, [])
+            coverage_matrix.append(
+                {
+                    "requirement_id": str(item.get("requirement_id", "")),
+                    "requirement": str(item.get("requirement", "")),
+                    "task_id": task_id,
+                    "query": str(item.get("query", "")),
+                    "fact_ids": list(fact_ids_by_task.get(task_id, [])),
+                    "citation_ids": sorted(citations_by_task.get(task_id, set())),
+                    "claim_ids": [claim.claim_id for claim in task_claims],
+                    "verified_claim_ids": [
+                        claim.claim_id
+                        for claim in task_claims
+                        if claim.verification_status == "verified"
+                    ],
+                    "answer_section": str(item.get("requirement_id", "")),
+                    "covered": any(
+                        claim.verification_status == "verified" for claim in task_claims
+                    ),
+                }
+            )
+
         return VerifiedReport(
             markdown=md,
             html=html_str,
@@ -637,6 +744,7 @@ class VerifiedReportBuilder:
             revision_log=revision_log,
             citations=citations,
             synthesis_quality=synth_quality,
+            coverage_matrix=coverage_matrix,
         )
 
 

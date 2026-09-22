@@ -140,6 +140,7 @@ def make_research_runner_answerer(
             "citations": list(rec.citations),
             "quality_passed": bool(rec.report_quality.get("passed", True)),
             "usage_estimated": rec.usage_estimated,
+            "coverage_matrix": list(rec.coverage_matrix),
         }
 
     _answer.__name__ = f"answer_research_runner_{mode}"

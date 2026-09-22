@@ -67,6 +67,13 @@ class SubTask(BaseModel):
     replan_of: str = ""
     gap_reason: str = ""
     gap_source_task_ids: list[str] = Field(default_factory=list)
+    # Question-derived coverage contract. These fields are generated only from
+    # the user's query (never from benchmark rubrics/reference answers), so the
+    # planner can keep search, extraction and synthesis aligned without leaking
+    # judge-only data.
+    requirement_ids: list[str] = Field(default_factory=list)
+    coverage_requirements: list[str] = Field(default_factory=list)
+    search_query: str = ""
 
 
 # ---------- reducers -------------------------------------------------------

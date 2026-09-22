@@ -115,6 +115,7 @@ class EvalResult:
     run_id: str = ""
     trace_id: str = ""
     trace_url: str = ""
+    coverage_matrix: list[dict[str, object]] = field(default_factory=list)
 
 
 class FixtureDataset:

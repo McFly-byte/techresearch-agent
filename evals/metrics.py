@@ -15,7 +15,7 @@ from evals.adapter import EvalResult
 
 log = logging.getLogger(__name__)
 
-# Threshold at/below which a question counts as "passed" for pass_rate.
+# Threshold at/above which a question counts as "passed" for pass_rate.
 PASS_THRESHOLD = 0.5
 
 

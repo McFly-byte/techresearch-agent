@@ -38,6 +38,94 @@ DEPTH_COUNTS: dict[ResearchDepth, int] = {
 # used to crash on uppercase "VS".
 _VS_SPLIT_RE = re.compile(r"\s+(?:vs|VS|Vs|v\.s\.|对比|versus)\s+", re.IGNORECASE)
 
+_IMPORTANT_SPLIT_RE = re.compile(r"\*\*important\*\*", re.IGNORECASE)
+_LIST_PREFIX_RE = re.compile(
+    r"^\s*(?:[-*•]\s+|\d{1,2}[.)、]\s*|[a-zA-Z][.)、）]\s*|"
+    r"[A-ZＡ-Ｚ][)）]\s*|[一二三四五六七八九十]+[、.．）]\s*)"
+)
+_SECTION_PREFIX_RE = re.compile(
+    r"^\s*(?:part\s+(?:one|two|three|four|\d+)|the\s+(?:first|second|third|fourth)\s+part|"
+    r"第[一二三四五六七八九十]+部分|[A-ZＡ-Ｚ][)）])",
+    re.IGNORECASE,
+)
+_INLINE_NUMBER_RE = re.compile(r"(?<!\w)(\d{1,2})[)）]\s*")
+_MAX_SEARCH_QUERY_CHARS = 800
+
+
+def _clean_requirement(text: str) -> str:
+    cleaned = _LIST_PREFIX_RE.sub("", text.strip())
+    cleaned = re.sub(r"[*_`#]+", "", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip(" :-：；;")
+
+
+def extract_coverage_requirements(query: str) -> list[str]:
+    """Extract an ordered checklist from the visible user question only.
+
+    DRB2 prompts usually carry explicit numbered sections/bullets. Keeping this
+    deterministic makes the plan inspectable and prevents hidden-rubric leakage.
+    The function is intentionally conservative: when no useful structure is
+    present the caller falls back to the legacy generic perspectives.
+    """
+
+    visible = _IMPORTANT_SPLIT_RE.split(query, maxsplit=1)[0].strip()
+    lines = [line.strip() for line in visible.splitlines() if line.strip()]
+    candidates: list[str] = []
+    for line in lines[1:]:
+        if _LIST_PREFIX_RE.match(line) or _SECTION_PREFIX_RE.match(line):
+            item = _clean_requirement(line)
+            if len(item) >= 4:
+                candidates.append(item)
+
+    # Some prompts put six or more numbered requirements in one introductory
+    # sentence (for example "1) ... 2) ..."). Recover those items as well.
+    for line in lines:
+        matches = list(_INLINE_NUMBER_RE.finditer(line))
+        if len(matches) < 3:
+            continue
+        for idx, match in enumerate(matches):
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(line)
+            item = _clean_requirement(line[match.end() : end])
+            if len(item) >= 4:
+                candidates.append(item)
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        key = item.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out[:16]
+
+
+def _question_anchor(query: str) -> str:
+    visible = _IMPORTANT_SPLIT_RE.split(query, maxsplit=1)[0].strip()
+    first = next((line.strip() for line in visible.splitlines() if line.strip()), visible)
+    return re.sub(r"\s+", " ", first)[:220].strip()
+
+
+def _group_requirements(items: list[str], n: int) -> list[list[str]]:
+    """Split ordered requirements into ``n`` contiguous, balanced groups."""
+
+    groups: list[list[str]] = []
+    start = 0
+    for idx in range(n):
+        remaining_items = len(items) - start
+        remaining_groups = n - idx
+        take = max(1, (remaining_items + remaining_groups - 1) // remaining_groups)
+        groups.append(items[start : start + take])
+        start += take
+    return [group for group in groups if group]
+
+
+def _compact_search_query(anchor: str, requirements: list[str]) -> str:
+    # Put the distinguishing requirement first so any provider-side truncation
+    # preserves query diversity. Keep enough topic context to disambiguate it.
+    body = "; ".join(req[:260] for req in requirements)
+    query = f"{body} | topic: {anchor}" if anchor else body
+    return query[:_MAX_SEARCH_QUERY_CHARS].rsplit(" ", 1)[0].strip()
+
 
 @runtime_checkable
 class Planner(Protocol):
@@ -100,6 +188,32 @@ class HeuristicPlanner:
         n = DEPTH_COUNTS[research_depth]
         q = query.strip()
 
+        requirements = extract_coverage_requirements(q)
+        if len(requirements) >= 2:
+            groups = _group_requirements(requirements, min(n, len(requirements)))
+            anchor = _question_anchor(q)
+            coverage_tasks: list[SubTask] = []
+            requirement_index = 0
+            for i, group in enumerate(groups, start=1):
+                ids = [f"R{j}" for j in range(requirement_index + 1, requirement_index + len(group) + 1)]
+                requirement_index += len(group)
+                description = "Coverage requirements:\n" + "\n".join(
+                    f"- {rid}: {item}" for rid, item in zip(ids, group, strict=True)
+                )
+                coverage_tasks.append(
+                    SubTask(
+                        task_id=f"task_{i}",
+                        title=group[0][:80],
+                        description=description,
+                        perspective="coverage",
+                        priority=i,
+                        requirement_ids=ids,
+                        coverage_requirements=group,
+                        search_query=_compact_search_query(anchor, group),
+                    )
+                )
+            return coverage_tasks
+
         comparison = _split_comparison(q)
         if comparison is not None:
             left, right = comparison
@@ -145,6 +259,7 @@ class HeuristicPlanner:
                     perspective=perspective,
                     depends_on=deps,
                     priority=i,
+                    search_query=_compact_search_query(_question_anchor(q), [body]),
                 )
             )
         return tasks
@@ -197,4 +312,5 @@ __all__ = [
     "Planner",
     "PlannerParseError",
     "RetryingPlanner",
+    "extract_coverage_requirements",
 ]

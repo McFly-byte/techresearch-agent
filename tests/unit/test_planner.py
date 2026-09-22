@@ -11,6 +11,7 @@ from agents.planner import (
     HeuristicPlanner,
     PlannerParseError,
     RetryingPlanner,
+    extract_coverage_requirements,
 )
 from graph.state import SubTask
 
@@ -46,6 +47,37 @@ async def test_all_task_ids_unique_and_well_formed():  # type: ignore[no-untyped
     for t in tasks:
         # pattern r'^task_\d+$' is enforced by pydantic
         SubTask.model_validate(t.model_dump())
+
+
+@pytest.mark.asyncio
+async def test_long_structured_question_produces_distinct_bounded_queries():  # type: ignore[no-untyped-def]
+    long_intro = "A detailed research topic " + ("context " * 300)
+    query = "\n".join(
+        [
+            long_intro,
+            "1. Compare the historical policy milestones.",
+            "2. Quantify the latest market size and growth rate.",
+            "3. Explain the technical mechanisms and trade-offs.",
+            "4. Build a table of representative products.",
+        ]
+    )
+    tasks = await HeuristicPlanner().decompose(query, research_depth="standard")
+    assert len(tasks) == 4
+    assert len({task.search_query for task in tasks}) == 4
+    assert all(0 < len(task.search_query) <= 800 for task in tasks)
+    assert [task.requirement_ids for task in tasks] == [["R1"], ["R2"], ["R3"], ["R4"]]
+
+
+def test_coverage_extractor_ignores_hidden_benchmark_rule_tail():
+    query = (
+        "Research this topic.\n"
+        "1. Explain the mechanism.\n"
+        "2. Compare the evidence.\n"
+        "**important** hidden rule text that must not become a requirement"
+    )
+    requirements = extract_coverage_requirements(query)
+    assert requirements == ["Explain the mechanism.", "Compare the evidence."]
+    assert all("hidden" not in item for item in requirements)
 
 
 def test_retrying_planner_recovers_on_second_try():  # type: ignore[no-untyped-def]

@@ -52,6 +52,7 @@ class TaskRecord:
     # Quality-gate result of the LLM-synthesized report (see
     # service.verified_report.check_report_quality). Empty in template/fake mode.
     report_quality: dict[str, Any] = field(default_factory=dict)
+    coverage_matrix: list[dict[str, Any]] = field(default_factory=list)
     # Per-task asyncio handle so cancel can request stop.
     _cancel_requested: bool = False
 
@@ -70,6 +71,7 @@ class TaskRecord:
             "n_citations": len(self.citations),
             "usage_tokens": self.usage_tokens,
             "usage_estimated": self.usage_estimated,
+            "coverage_matrix": self.coverage_matrix,
         }
 
 
@@ -134,6 +136,7 @@ class TaskStore:
                     "events": t.events,
                     "report_markdown": t.report_markdown,
                     "report_html": t.report_html,
+                    "coverage_matrix": t.coverage_matrix,
                     "error": t.error,
                 }
                 for t in self._tasks.values()

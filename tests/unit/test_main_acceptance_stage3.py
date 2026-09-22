@@ -539,6 +539,39 @@ async def test_extractor_prompt_includes_user_context() -> None:
     assert "offline-scope-XYZ" in joined, joined
 
 
+@pytest.mark.asyncio
+async def test_worker_threads_coverage_scope_into_search_and_extraction() -> None:
+    content = "The 2024 market size was 42 billion dollars."
+    llm = RecordingLLM([(_fact_json(content, "c_task_1_1"), 10, 5)])
+    queries: list[str] = []
+
+    class _RecordingWeb:
+        async def search(self, query, max_results=5):  # type: ignore[no-untyped-def]
+            queries.append(query)
+            return [_hit("https://x/coverage")]
+
+    worker = WorkerNode(
+        web_search=_RecordingWeb(),
+        fetcher=FakeFetcher({"https://x/coverage": content}),
+        llm_provider=llm,
+        budget=BudgetManager(max_iterations=1),
+    )
+    task = SubTask(
+        task_id="task_1",
+        title="market size",
+        description="Coverage requirements:\n- R1: quantify the 2024 market size",
+        search_query="2024 market size evidence",
+        requirement_ids=["R1"],
+        coverage_requirements=["quantify the 2024 market size"],
+    )
+
+    await worker.run_task(task)
+
+    assert queries == ["2024 market size evidence"]
+    joined = "\n".join(m.content for call in llm.calls for m in call["messages"])
+    assert "R1: quantify the 2024 market size" in joined
+
+
 # ---------------------------------------------------------------------------
 # Gap 10: reflection pure function covers all six categories.
 # ---------------------------------------------------------------------------

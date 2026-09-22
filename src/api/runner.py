@@ -388,6 +388,23 @@ class ResearchRunner:
                 llm_provider=synthesis_llm,
                 tracing=self._tracing,
             )
+            coverage_plan: list[dict[str, object]] = []
+            for subtask in result.get("subtasks", []):
+                requirement_ids = list(getattr(subtask, "requirement_ids", []) or [])
+                requirements = list(
+                    getattr(subtask, "coverage_requirements", []) or []
+                )
+                for requirement_id, requirement in zip(
+                    requirement_ids, requirements, strict=False
+                ):
+                    coverage_plan.append(
+                        {
+                            "requirement_id": requirement_id,
+                            "requirement": requirement,
+                            "task_id": getattr(subtask, "task_id", ""),
+                            "query": getattr(subtask, "search_query", ""),
+                        }
+                    )
             write_exc: BaseException | None = None
             try:
                 report = await run_with_hard_timeout(
@@ -396,6 +413,7 @@ class ResearchRunner:
                         facts=facts,
                         citations=citations,
                         mode=kit.mode,
+                        coverage_plan=coverage_plan,
                     ),
                     timeout=self._write_timeout,
                     label="write_timeout",
@@ -433,6 +451,7 @@ class ResearchRunner:
             if synth_usage is not None:
                 rec.usage_estimated = bool(getattr(synth_usage, "usage_estimated", True))
             rec.report_quality = dict(report.synthesis_quality)
+            rec.coverage_matrix = list(report.coverage_matrix)
 
             # Quality gate: an LLM-synthesized report must be non-empty, not a
             # prompt echo, and carry traceable [cN] tags. Empty

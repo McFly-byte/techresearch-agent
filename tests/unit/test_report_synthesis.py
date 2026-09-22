@@ -315,9 +315,68 @@ async def test_builder_caps_and_parallelizes_claim_verification() -> None:
 
     report = await builder.build(query="q", facts=facts, citations=citations, mode="fake")
 
-    assert len(report.claims) == 8
-    assert len(verifier.calls) == 8
+    assert len(report.claims) == 12
+    assert len(verifier.calls) == 12
     assert verifier.max_active == 2
+
+
+@pytest.mark.asyncio
+async def test_builder_round_robins_tasks_and_persists_coverage_matrix() -> None:
+    class EntailingVerifier:
+        async def verify(self, claim, citations, *, round_label="initial"):  # type: ignore[no-untyped-def]
+            return VerificationResult(
+                claim_id=claim.claim_id,
+                verdict="entailment",
+                reason="ok",
+                round=round_label,
+            )
+
+    facts = [
+        Fact(
+            fact_id=f"f{i}",
+            claim=f"task one fact {i}",
+            source_citation_ids=[f"src{i}"],
+            source_task_id="task_1",
+        )
+        for i in range(20)
+    ]
+    facts.append(
+        Fact(
+            fact_id="f_other",
+            claim="task two evidence",
+            source_citation_ids=["src_other"],
+            source_task_id="task_2",
+        )
+    )
+    citations = [_cite(f"src{i}", f"https://x.test/{i}") for i in range(20)]
+    citations.append(_cite("src_other", "https://x.test/other"))
+    plan = [
+        {
+            "requirement_id": "R1",
+            "requirement": "cover task one",
+            "task_id": "task_1",
+            "query": "query one",
+        },
+        {
+            "requirement_id": "R2",
+            "requirement": "cover task two",
+            "task_id": "task_2",
+            "query": "query two",
+        },
+    ]
+    report = await VerifiedReportBuilder(verifier=EntailingVerifier()).build(  # type: ignore[arg-type]
+        query="q",
+        facts=facts,
+        citations=citations,
+        mode="fake",
+        coverage_plan=plan,
+    )
+
+    assert len(report.claims) == 16
+    assert {claim.section_id for claim in report.claims} == {"task_1", "task_2"}
+    assert [row["requirement_id"] for row in report.coverage_matrix] == ["R1", "R2"]
+    assert all(row["covered"] is True for row in report.coverage_matrix)
+    assert report.coverage_matrix[1]["query"] == "query two"
 
 
 # --- EvalRunner integration ---------------------------------------------------

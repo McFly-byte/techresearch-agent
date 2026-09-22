@@ -19,6 +19,7 @@ Design rules:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -58,7 +59,9 @@ def _prompt_commits() -> dict[str, str]:
     return {name: entry.commit_hash for name, entry in lock.items()}
 
 
-def _unpack_answerer(raw: Any) -> tuple[str, int, int, list[dict], bool, bool]:
+def _unpack_answerer(
+    raw: Any,
+) -> tuple[str, int, int, list[dict], bool, bool, list[dict[str, object]]]:
     """Accept BOTH answerer return shapes.
 
     - Legacy 3-tuple ``(answer, rounds, tokens)`` (old baselines / offline
@@ -75,9 +78,12 @@ def _unpack_answerer(raw: Any) -> tuple[str, int, int, list[dict], bool, bool]:
             list(citations) if isinstance(citations, list) else [],
             bool(raw.get("quality_passed", True)),
             bool(raw.get("usage_estimated", True)),
+            list(raw.get("coverage_matrix", []))
+            if isinstance(raw.get("coverage_matrix", []), list)
+            else [],
         )
     answer, rounds, tokens = raw
-    return str(answer), int(rounds), int(tokens), [], True, True
+    return str(answer), int(rounds), int(tokens), [], True, True, []
 
 
 def _git_commit() -> str:
@@ -446,6 +452,7 @@ class LangSmithExperimentSink:
                 "output_tokens": int(payload.get("output_tokens", 0) or 0),
                 "total_tokens": int(payload.get("total_tokens", 0) or 0),
                 "usage_by_stage": payload.get("usage_by_stage", {}),
+                "coverage_matrix": payload.get("coverage_matrix", []),
                 "failure_category": str(payload.get("failure_category", "")),
                 "attempt": int(payload.get("attempt", 1)),
                 "language": q.language,
@@ -494,7 +501,172 @@ class LangSmithExperimentSink:
 
         all_payloads = self._collect_results(runner, questions)
         runner._write_summary(all_payloads, start=start_time, end=time.time())
+        if any(int(payload.get("attempt", 1) or 1) > 1 for payload in all_payloads):
+            await self.publish_final_snapshot(
+                out=out,
+                questions=questions[:limit],
+                source_experiment=experiment_manifest,
+            )
         return all_payloads
+
+    async def publish_final_snapshot(
+        self,
+        *,
+        out: Path,
+        questions: list[EvalQuestion],
+        source_experiment: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        """Publish one cached final result per qid, with zero model calls.
+
+        ``aevaluate`` appends a new root run when a failed question is resumed.
+        That is correct attempt history, but it makes the experiment-level mean
+        differ from the local final-state summary. This method creates a small
+        authoritative snapshot experiment from already persisted JSON results.
+        Each snapshot row links back to the real research trace; no research,
+        search, synthesis or judge provider is invoked.
+        """
+
+        from langsmith.evaluation import aevaluate
+
+        client = self._client
+        if client is None:
+            raise RuntimeError("LangSmith client is unavailable")
+        source_experiment = source_experiment or json.loads(
+            (out / "experiment.json").read_text(encoding="utf-8")
+        )
+        payloads: dict[str, dict[str, Any]] = {}
+        examples: list[Any] = []
+        for question in questions:
+            path = out / "results" / f"{question.qid}.json"
+            example = self._example_by_qid.get(question.qid)
+            if not path.is_file() or example is None:
+                continue
+            payloads[question.qid] = json.loads(path.read_text(encoding="utf-8"))
+            examples.append(example)
+        if not examples:
+            raise ValueError("no persisted results available for final snapshot")
+
+        fingerprint_rows = [
+            {
+                "qid": qid,
+                "status": payload.get("status", ""),
+                "attempt": int(payload.get("attempt", 1) or 1),
+                "judge_score": float(payload.get("judge_score", 0.0) or 0.0),
+                "total_tokens": int(payload.get("total_tokens", 0) or 0),
+                "trace_id": str(payload.get("trace_id", "")),
+            }
+            for qid, payload in sorted(payloads.items())
+        ]
+        fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_rows, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        manifest_path = out / "final_experiment.json"
+        if manifest_path.is_file():
+            saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if saved.get("result_fingerprint") == fingerprint:
+                saved_url = str(saved.get("experiment_url", ""))
+                if saved_url:
+                    (out / "experiment_url.txt").write_text(
+                        saved_url + "\n", encoding="utf-8"
+                    )
+                self._experiment_name = str(saved.get("experiment_name", ""))
+                return saved
+
+        project_name = f"{self._prefix}-final-{fingerprint[:8]}"
+        project = client.create_project(
+            project_name,
+            description="Final-state snapshot; cached results only, zero model calls",
+            reference_dataset_id=self._dataset_id,
+            metadata={
+                **self._metadata(),
+                "final_snapshot": True,
+                "source_experiment_id": str(source_experiment.get("experiment_id", "")),
+                "result_fingerprint": fingerprint,
+                "__ls_runner": "py_sdk_evaluate",
+            },
+            num_examples=len(examples),
+            num_repetitions=1,
+            evaluator_keys=["judge_score"],
+        )
+
+        async def replay(inputs: dict) -> dict:
+            qid = str(inputs.get("qid", ""))
+            payload = payloads[qid]
+            detail_raw = payload.get("judge_detail", "")
+            try:
+                detail = json.loads(str(detail_raw)) if detail_raw else []
+            except (json.JSONDecodeError, TypeError, ValueError):
+                detail = []
+            return {
+                "output": str(payload.get("answer", ""))[:_MAX_STORED_ANSWER],
+                "qid": qid,
+                "status": str(payload.get("status", "")),
+                "judge_score": float(payload.get("judge_score", 0.0) or 0.0),
+                "judge_reason": str(payload.get("judge_reason", ""))[:500],
+                "judge_detail": detail,
+                "latency_s": float(payload.get("latency_s", 0.0) or 0.0),
+                "answer_latency_s": float(payload.get("answer_latency_s", 0.0) or 0.0),
+                "judge_latency_s": float(payload.get("judge_latency_s", 0.0) or 0.0),
+                "input_tokens": int(payload.get("input_tokens", 0) or 0),
+                "output_tokens": int(payload.get("output_tokens", 0) or 0),
+                "total_tokens": int(payload.get("total_tokens", 0) or 0),
+                "usage_by_stage": payload.get("usage_by_stage", {}),
+                "coverage_matrix": payload.get("coverage_matrix", []),
+                "attempt": int(payload.get("attempt", 1) or 1),
+                "source_run_id": str(payload.get("run_id", "")),
+                "source_trace_id": str(payload.get("trace_id", "")),
+                "source_trace_url": str(payload.get("trace_url", "")),
+            }
+
+        def record_final_judge(run: Any, _example: Any) -> dict:
+            outputs = getattr(run, "outputs", None) or {}
+            detail = outputs.get("judge_detail", [])
+            if not isinstance(detail, list):
+                detail = []
+            return {
+                "key": "judge_score",
+                "score": float(outputs.get("judge_score", 0.0) or 0.0),
+                "value": {
+                    "status": outputs.get("status", ""),
+                    "judge_detail": detail[:_MAX_DETAIL_IN_FEEDBACK],
+                },
+                "comment": str(outputs.get("judge_reason", ""))[:500],
+            }
+
+        results = await aevaluate(
+            replay,
+            data=examples,
+            evaluators=[record_final_judge],
+            metadata={
+                **self._metadata(),
+                "final_snapshot": True,
+                "source_experiment_id": str(source_experiment.get("experiment_id", "")),
+                "result_fingerprint": fingerprint,
+            },
+            experiment=project,
+            max_concurrency=self._concurrency,
+            client=client,
+            error_handling="log",
+        )
+        url = await results.get_comparison_url()
+        manifest: dict[str, object] = {
+            "schema_version": "1.0",
+            "experiment_name": str(results.experiment_name),
+            "experiment_id": str(project.id),
+            "experiment_url": url or self._comparison_url(project),
+            "source_experiment_id": str(source_experiment.get("experiment_id", "")),
+            "result_fingerprint": fingerprint,
+            "qids": list(payloads),
+            "judge": "qwen-nonofficial",
+            "official_judge": "not_run (requires GPT-5.5)",
+            "zero_model_calls": True,
+        }
+        EvalRunner._atomic_write_json(manifest_path, manifest)
+        final_url = str(manifest["experiment_url"])
+        if final_url:
+            (out / "experiment_url.txt").write_text(final_url + "\n", encoding="utf-8")
+        self._experiment_name = str(manifest["experiment_name"])
+        return manifest
 
     @staticmethod
     def _collect_results(runner: Any, questions: list[EvalQuestion]) -> list[dict]:
@@ -653,6 +825,7 @@ class EvalRunner:
             citations_list: list[dict] = []
             quality_passed = True
             usage_estimated = True
+            coverage_matrix: list[dict[str, object]] = []
         else:
             assert callable(self._answerer)
             raw: Any = self._answerer(prompt)
@@ -665,6 +838,7 @@ class EvalRunner:
                 citations_list,
                 quality_passed,
                 usage_estimated,
+                coverage_matrix,
             ) = _unpack_answerer(raw)
         if not quality_passed:
             raise RuntimeError("report quality gate failed")
@@ -691,6 +865,7 @@ class EvalRunner:
             judge_score=score,
             judge_reason=reason,
             judge_detail=detail,
+            coverage_matrix=coverage_matrix,
         )
 
     async def _execute_one_bounded(self, q: EvalQuestion, *, started_at: float) -> EvalResult:
