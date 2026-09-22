@@ -116,6 +116,10 @@ Trace 中 64 次搜索调用有 39 次 permanent fetch/tool failure、24 次 tra
 
 并发审计发现此前只有进程级总并发 4 和轮询选 Key，没有严格保证同一 Key 同时只被一个请求使用。现已为每个 Key 增加跨 Provider 实例共享的 `asyncio.Lock`：同一 Key 的整段重试过程串行，不同 Key 仍可并行；等待 Key 时不占用全局 Tavily 请求槽；获得锁后再次检查熔断状态，避免排队请求重用刚失效的 Key。熔断原因也保存在共享池中，使等待者继承同一脱敏 `auth/quota` 错误。离线并发测试测得每 Key 最大并发为 1、两 Key 总并发为 2，且三个并发等待者只调用失效 Key 一次。现有 trace 只能证明账户被停用，不能证明停用一定由并发导致；由于当前 Key 已失效，该假设仍需下一批健康 Key 做 Core4 v4 在线验证。
 
+per-key 单飞提交 `53de2cb` 上的 Core4 v4 已实际重试，独立 Experiment 为 `f1ebf542-29ea-4fa6-925a-b5ef13613d6c`。运行在 11.86 秒内结束，结果仍为 completed=0、failed=4：task7、task8 分别在 5.99/5.56 秒触发 `search_auth_permission`，共享池随后熔断，task17、task71 没有产生 facts/citations。四题均未进入 LLM 阶段，因此 Token 为 0。该结果证明新锁已进入真实运行版本，但当前凭据在请求开始阶段已经无效；它不能验证锁对健康 Key 稳定性的收益，也不能支持继续 Core10。
+
+v4 Experiment：`https://smith.langchain.com/o/4f508cdf-ba06-4214-b90a-689e3ebdc812/datasets/3107dfc1-7654-4bc9-95ed-9654ca558821/compare?selectedSessions=f1ebf542-29ea-4fa6-925a-b5ef13613d6c`。
+
 v2/v3 Experiment：
 
 - v2：`https://smith.langchain.com/o/4f508cdf-ba06-4214-b90a-689e3ebdc812/datasets/3107dfc1-7654-4bc9-95ed-9654ca558821/compare?selectedSessions=e60b547d-4978-49f5-8082-b4e020a16d21`（发现系统性引用门禁失败后主动中断）。

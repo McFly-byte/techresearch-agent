@@ -136,3 +136,5 @@ VerifiedReportBuilder 旧逻辑仅取 `facts_to_claims(facts)[:8]`。并发 fact
 后续曾替换五个新 Key，首次逐 Key 探针均成功，但真实 Core4 v2 暴露了一个独立的长问题引用修复缺陷：确定性引用模板复述完整问题，因而被 prompt-echo 门禁拒绝。该缺陷已由提交 `d7c3552` 修复并以长问题测试覆盖。再次启动的 Core4 v3 随即因凭据状态变化 4/4 retrieval failure；复查时四个 Key 的关联账户已被 Tavily 停用，另一个持续 TLS EOF。结论仍是外部搜索凭据未达到持续 workload 的健康门禁，不能据此评价 coverage 改造收益，也不能启动 Core10/Full132。
 
 并发控制复核还发现旧 Key 池只有全局并发 4，没有 per-key 单飞保证。现已增加每 Key 独立互斥锁，并验证同 Key 最大并发为 1、不同 Key 仍可并行；锁等待后会重查熔断状态。该修复消除了一个可能的账户压力因素，但现有错误只能直接支持“账户被 Tavily 停用”，不能支持“并发导致停用”的因果结论。
+
+使用 per-key 单飞提交 `53de2cb` 重试的 Core4 v4 仍在 11.86 秒内 0/4：两题直接 `search_auth_permission`，另外两题在共享池熔断后为空结果，Token=0。说明当前阻塞发生在研究和模型调用之前；锁没有被绕过，但也无法恢复已经停用的服务端账户。
