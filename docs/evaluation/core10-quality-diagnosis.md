@@ -132,3 +132,5 @@ VerifiedReportBuilder 旧逻辑仅取 `facts_to_claims(facts)[:8]`。并发 fact
 - 对 Core4 trace 的只读统计显示 64 次搜索调用中，39 次为 permanent fetch/tool failure、24 次为 transient network failure、1 次未形成有效结果。随后用最小查询逐个轮换本地配置的五个 Key，Tavily SDK 均返回 `InvalidAPIKeyError`。只核对了 Key 数量、长度、前缀和唯一性，没有读取或输出 Key 内容。
 - 该事件证明的是当前外部搜索凭据不可用，不能用于计算改进后的质量、Token 或延迟；它不支持“coverage 改造有效”或“coverage 改造无效”的结论。代码已补充 SDK 异常类型识别，使全部 Key 被拒绝时稳定抛出脱敏的 `ToolAuthenticationError`，避免再次消耗大量无效重试。
 - 在有效 Tavily 凭据恢复前，不运行新的 Core10 或 Full132。恢复后应使用新的 `drb2_core4_coverage_v2` 目录和独立 Experiment 重跑同一四题，而不是向本次失败目录写入结果。
+
+后续曾替换五个新 Key，首次逐 Key 探针均成功，但真实 Core4 v2 暴露了一个独立的长问题引用修复缺陷：确定性引用模板复述完整问题，因而被 prompt-echo 门禁拒绝。该缺陷已由提交 `d7c3552` 修复并以长问题测试覆盖。再次启动的 Core4 v3 随即因凭据状态变化 4/4 retrieval failure；复查时四个 Key 的关联账户已被 Tavily 停用，另一个持续 TLS EOF。结论仍是外部搜索凭据未达到持续 workload 的健康门禁，不能据此评价 coverage 改造收益，也不能启动 Core10/Full132。
