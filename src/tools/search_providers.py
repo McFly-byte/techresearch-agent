@@ -139,6 +139,7 @@ class TavilySearchProvider:
                 except Exception as e:  # Tavily emits generic errors for HTTP failures.
                     last_exc = e
                     msg = str(e).lower()
+                    error_type = type(e).__name__.lower()
                     if any(
                         marker in msg
                         for marker in ("usage limit", "quota", "credit limit", "credits exhausted")
@@ -147,7 +148,21 @@ class TavilySearchProvider:
                         self._pool.disable(key_index)
                         rotate = True
                         break
-                    if any(marker in msg for marker in ("401", "403", "unauthorized", "forbidden")):
+                    if (
+                        "invalidapikey" in error_type
+                        or "authentication" in error_type
+                        or any(
+                            marker in msg
+                            for marker in (
+                                "401",
+                                "403",
+                                "unauthorized",
+                                "forbidden",
+                                "invalid api key",
+                                "invalid_api_key",
+                            )
+                        )
+                    ):
                         saw_auth = True
                         self._pool.disable(key_index)
                         rotate = True
