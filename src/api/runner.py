@@ -125,9 +125,10 @@ def _live_kit(settings: Settings) -> ProviderKit:
       If llm_provider="fake" or "auto" without DASHSCOPE_API_KEY, raise
       ConfigurationError — never silently degrade to fake.
     """
-    if not settings.has_tavily_key:
+    if not settings.has_tavily_search:
         raise ConfigurationError(
-            "mode=live requires TAVILY_API_KEY. Put it in .env or drop mode="
+            "mode=live requires TAVILY_API_KEY(S) or TAVILY_PROXY_URL. "
+            "Configure one in .env or drop mode="
             "fake to use offline deterministic sources."
         )
     # Live mode must not silently fall back to a fake LLM.
@@ -143,9 +144,9 @@ def _live_kit(settings: Settings) -> ProviderKit:
         )
 
     from tools.fetchers import HttpPageFetcher
-    from tools.search_providers import TavilySearchProvider
+    from tools.search_providers import build_search_provider
 
-    web = TavilySearchProvider(api_key=settings.tavily_key_pool())
+    web = build_search_provider(settings)
     fetcher = HttpPageFetcher()
     llm = build_provider(settings=settings)
     return ProviderKit(web_search=web, fetcher=fetcher, llm=llm, mode="live")

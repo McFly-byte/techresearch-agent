@@ -59,7 +59,7 @@ def doctor(ctx: click.Context) -> None:
     optional: list[tuple[str, bool, str]] = [
         ("DashScope / Qwen", s.has_dashscope_key, "Needed in phase 1+ for real LLM calls."),
         ("LangSmith trace", s.has_langsmith_key, "Needed for observability (phase 1+)."),
-        ("Tavily search", s.has_tavily_key, "Needed for web search (phase 1+)."),
+        ("Tavily search", s.has_tavily_search, "Needed for web search (phase 1+)."),
         (
             "Feishu export",
             bool(s.feishu_app_secret.get_secret_value().strip()),
@@ -110,14 +110,14 @@ def research(query: str, live: bool, papers: bool) -> None:
     paper: Any
 
     if live:
-        if not s.has_tavily_key:
+        if not s.has_tavily_search:
             raise click.UsageError(
-                "--live requires TAVILY_API_KEY. Put it in .env (see docs/manual-setup.md) "
+                "--live requires TAVILY_API_KEY(S) or TAVILY_PROXY_URL in .env "
                 "or drop --live to use fake providers."
             )
-        from tools.search_providers import TavilySearchProvider
+        from tools.search_providers import build_search_provider
 
-        web = TavilySearchProvider(api_key=s.tavily_key_pool())
+        web = build_search_provider(s)
         fetcher = HttpPageFetcher()
         paper = ArxivSearchProvider() if papers else None
     else:

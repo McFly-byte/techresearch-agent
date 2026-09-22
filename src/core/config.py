@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     # Optional comma / semicolon / whitespace separated key pool.  The legacy
     # singular key remains supported and is placed first when both are set.
     tavily_api_keys: SecretStr = Field(default=SecretStr(""))
+    # Optional Tavily-compatible local key-pool proxy. When configured, search
+    # traffic goes through the proxy and the direct key pool is used only by
+    # the proxy bootstrap command to populate its ignored key.txt file.
+    tavily_proxy_url: str = ""
 
     # ---- Research execution ------------------------------------------------
     research_timeout_seconds: float = (
@@ -146,6 +150,11 @@ class Settings(BaseSettings):
     @property
     def has_tavily_key(self) -> bool:
         return bool(self.tavily_key_pool())
+
+    @property
+    def has_tavily_search(self) -> bool:
+        """Whether either direct Tavily or the compatible proxy is configured."""
+        return self.has_tavily_key or bool(self.tavily_proxy_url.strip())
 
     def tavily_key_pool(self) -> tuple[str, ...]:
         """Return configured Tavily keys in stable order without duplicates."""

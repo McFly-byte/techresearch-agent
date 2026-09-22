@@ -10,6 +10,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
+
 from core.config import Settings
 from core.exceptions import (
     ProviderNotConfiguredError,
@@ -265,6 +267,168 @@ class TavilySearchProvider:
         return out
 
 
+class TavilyProxySearchProvider:
+    """Tavily-compatible HTTP client backed by the local key-pool proxy.
+
+    Key rotation, per-key concurrency and upstream retrying belong to the
+    proxy. This adapter deliberately does not keep a second credential pool;
+    it translates the proxy's structured failures into the project's stable
+    tool-error taxonomy without exposing credentials.
+    """
+
+    name = "tavily"
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout: float = SEARCH_TIMEOUT_S,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        normalized = base_url.strip().rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ProviderNotConfiguredError(
+                "TAVILY_PROXY_URL must be an http(s) URL."
+            )
+        self._base_url = normalized
+        self._timeout = timeout
+        self._transport = transport
+
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+            ) as client:
+                response = await client.post(
+                    "/search",
+                    headers={"Authorization": "Bearer local-tavily-proxy-client"},
+                    json={
+                        "query": query,
+                        "max_results": max_results,
+                        "search_depth": "basic",
+                        "include_answer": False,
+                    },
+                )
+                if response.is_success:
+                    return _search_results(response.json())
+                await self._raise_proxy_error(client, response)
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise TransientToolError(
+                "tavily proxy is temporarily unreachable"
+            ) from exc
+        except ValueError as exc:
+            raise ToolError("tavily proxy returned invalid JSON") from exc
+        raise ToolError("tavily proxy search failed")  # pragma: no cover
+
+    async def _raise_proxy_error(
+        self, client: httpx.AsyncClient, response: httpx.Response
+    ) -> None:
+        code, message = _proxy_error_details(response)
+        if code == "all_tavily_accounts_cooling_down":
+            retry_after = response.headers.get("retry-after", "unknown")
+            raise TransientToolError(
+                f"tavily proxy reports all keys cooling down; retry_after={retry_after}s"
+            )
+        if code == "all_tavily_accounts_busy":
+            retry_after = response.headers.get("retry-after", "unknown")
+            raise TransientToolError(
+                f"tavily proxy reports all keys busy; retry_after={retry_after}s"
+            )
+        if code == "tavily_upstream_pool_busy":
+            raise TransientToolError("tavily proxy upstream connection pool is busy")
+        if code == "tavily_upstream_unavailable" or (
+            response.status_code >= 500 and code != "all_tavily_accounts_exhausted"
+        ):
+            raise TransientToolError(
+                f"tavily proxy upstream unavailable; code={code or response.status_code}"
+            )
+        if code == "all_tavily_accounts_exhausted":
+            await _raise_exhausted_proxy_pool(client, code)
+        if response.status_code in {401, 403}:
+            raise ToolAuthenticationError(
+                f"tavily proxy rejected the request; code={code or response.status_code}"
+            )
+        if response.status_code == 429:
+            raise TransientToolError(
+                f"tavily proxy rate limited the request; code={code or response.status_code}"
+            )
+        safe_message = message[:160] if message else "request failed"
+        raise ToolError(
+            f"tavily proxy request failed; status={response.status_code}; "
+            f"code={code or 'unknown'}; message={safe_message}"
+        )
+
+
+def _proxy_error_details(response: httpx.Response) -> tuple[str, str]:
+    try:
+        payload = response.json()
+    except ValueError:
+        return "", ""
+    error = payload.get("error", {}) if isinstance(payload, dict) else {}
+    if not isinstance(error, dict):
+        return "", ""
+    return str(error.get("code", "")), str(error.get("message", ""))
+
+
+async def _raise_exhausted_proxy_pool(client: httpx.AsyncClient, code: str) -> None:
+    """Resolve the generic proxy exhaustion response to an actionable cause."""
+    try:
+        response = await client.get("/accounts")
+        response.raise_for_status()
+        payload = response.json()
+        accounts = payload.get("accounts", []) if isinstance(payload, dict) else []
+    except (httpx.HTTPError, ValueError):
+        raise ToolError(
+            f"tavily proxy has no available upstream key; code={code}; diagnostics=unavailable"
+        ) from None
+
+    errors = " ".join(
+        str(account.get("last_error", "")).lower()
+        for account in accounts
+        if isinstance(account, dict)
+    )
+    has_auth = any(
+        marker in errors
+        for marker in ("401", "403", "unauthorized", "forbidden", "deactivated", "invalid")
+    )
+    has_quota = any(
+        marker in errors
+        for marker in ("432", "433", "quota", "usage limit", "credit", "exhausted")
+    )
+    if has_auth and not has_quota:
+        raise ToolAuthenticationError(
+            f"tavily proxy rejected all upstream credentials; code={code}"
+        )
+    if has_quota and not has_auth:
+        raise ToolQuotaExceededError(
+            f"tavily proxy exhausted all upstream quotas; code={code}"
+        )
+    if has_auth and has_quota:
+        raise ToolError(
+            f"tavily proxy pool exhausted by mixed authentication and quota failures; code={code}"
+        )
+    raise ToolError(
+        f"tavily proxy has no available upstream key; code={code}; inspect=/accounts"
+    )
+
+
+def _search_results(data: dict[str, Any]) -> list[SearchResult]:
+    out: list[SearchResult] = []
+    for result in data.get("results", []):
+        content = (result.get("content") or "")[:MAX_RESULT_CHARS]
+        out.append(
+            SearchResult(
+                title=(result.get("title") or "").strip(),
+                url=result.get("url", ""),
+                snippet=content,
+                source="tavily",
+            )
+        )
+    return out
+
+
 class FakeSearchProvider:
     """Deterministic offline search. Returns canned results keyed by query substring."""
 
@@ -284,9 +448,16 @@ class FakeSearchProvider:
 
 def build_search_provider(settings: Settings) -> Any:
     """Pick live Tavily iff key is set and provider is not forced to fake."""
-    if settings.llm_provider == "fake" or not settings.has_tavily_key:
+    if settings.llm_provider == "fake" or not settings.has_tavily_search:
         return FakeSearchProvider()
+    if settings.tavily_proxy_url.strip():
+        return TavilyProxySearchProvider(settings.tavily_proxy_url)
     return TavilySearchProvider(api_key=settings.tavily_key_pool())
 
 
-__all__ = ["FakeSearchProvider", "TavilySearchProvider", "build_search_provider"]
+__all__ = [
+    "FakeSearchProvider",
+    "TavilyProxySearchProvider",
+    "TavilySearchProvider",
+    "build_search_provider",
+]
