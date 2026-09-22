@@ -30,6 +30,10 @@ _GLOBAL_TAVILY_INFLIGHT = 4
 _LOOP_LIMITERS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
     weakref.WeakKeyDictionary()
 )
+_LOOP_KEY_LOCKS: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop,
+    dict[tuple[str, ...], tuple[asyncio.Lock, ...]],
+] = weakref.WeakKeyDictionary()
 
 
 @dataclass
@@ -39,6 +43,7 @@ class _TavilyPoolState:
     keys: tuple[str, ...]
     next_index: int = 0
     disabled: set[int] = field(default_factory=set)
+    disable_reasons: dict[int, str] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def acquire(self, excluded: set[int]) -> tuple[int, str] | None:
@@ -51,9 +56,14 @@ class _TavilyPoolState:
                 return index, self.keys[index]
         return None
 
-    def disable(self, index: int) -> None:
+    def disable(self, index: int, reason: str) -> None:
         with self.lock:
             self.disabled.add(index)
+            self.disable_reasons[index] = reason
+
+    def disabled_reason(self, index: int) -> str:
+        with self.lock:
+            return self.disable_reasons.get(index, "")
 
     def all_disabled(self) -> bool:
         with self.lock:
@@ -80,6 +90,25 @@ def _tavily_limiter() -> asyncio.Semaphore:
         limiter = asyncio.Semaphore(_GLOBAL_TAVILY_INFLIGHT)
         _LOOP_LIMITERS[loop] = limiter
     return limiter
+
+
+def _tavily_key_lock(keys: tuple[str, ...], index: int) -> asyncio.Lock:
+    """Return the loop-local mutex for one credential in a shared key pool.
+
+    Provider instances share the same locks, so one key can never serve two
+    in-flight requests in the evaluation event loop.  Locks are loop-local to
+    avoid binding asyncio primitives to a different loop in tests or workers.
+    """
+    loop = asyncio.get_running_loop()
+    locks_by_pool = _LOOP_KEY_LOCKS.get(loop)
+    if locks_by_pool is None:
+        locks_by_pool = {}
+        _LOOP_KEY_LOCKS[loop] = locks_by_pool
+    locks = locks_by_pool.get(keys)
+    if locks is None:
+        locks = tuple(asyncio.Lock() for _ in keys)
+        locks_by_pool[keys] = locks
+    return locks[index]
 
 
 class TavilySearchProvider:
@@ -125,61 +154,82 @@ class TavilySearchProvider:
             key_index, key = selected
             tried.add(key_index)
             rotate = False
-            for attempt in range(MAX_RETRIES + 1):
-                try:
-                    async with _tavily_limiter():
-                        data = await asyncio.wait_for(
-                            asyncio.to_thread(_call, key), timeout=self._timeout
-                        )
-                    break
-                except TimeoutError as e:
-                    last_exc = e
-                    saw_transient = True
-                    rotate = attempt >= MAX_RETRIES
-                except Exception as e:  # Tavily emits generic errors for HTTP failures.
-                    last_exc = e
-                    msg = str(e).lower()
-                    error_type = type(e).__name__.lower()
-                    if any(
-                        marker in msg
-                        for marker in ("usage limit", "quota", "credit limit", "credits exhausted")
-                    ):
-                        saw_quota = True
-                        self._pool.disable(key_index)
-                        rotate = True
+            # Keep retries for a logical request under the same per-key lock.
+            # Waiting for the key happens before taking the global slot, so a
+            # busy credential cannot starve requests assigned to other keys.
+            async with _tavily_key_lock(self._pool.keys, key_index):
+                # Another request may have disabled this key while we waited.
+                disabled_reason = self._pool.disabled_reason(key_index)
+                if disabled_reason:
+                    rotate = True
+                    saw_auth = saw_auth or disabled_reason == "auth"
+                    saw_quota = saw_quota or disabled_reason == "quota"
+                attempts = range(0) if rotate else range(MAX_RETRIES + 1)
+                for attempt in attempts:
+                    try:
+                        async with _tavily_limiter():
+                            data = await asyncio.wait_for(
+                                asyncio.to_thread(_call, key), timeout=self._timeout
+                            )
                         break
-                    if (
-                        "invalidapikey" in error_type
-                        or "authentication" in error_type
-                        or any(
+                    except TimeoutError as e:
+                        last_exc = e
+                        saw_transient = True
+                        rotate = attempt >= MAX_RETRIES
+                    except Exception as e:  # Tavily emits generic errors for HTTP failures.
+                        last_exc = e
+                        msg = str(e).lower()
+                        error_type = type(e).__name__.lower()
+                        if any(
                             marker in msg
                             for marker in (
-                                "401",
-                                "403",
-                                "unauthorized",
-                                "forbidden",
-                                "invalid api key",
-                                "invalid_api_key",
+                                "usage limit",
+                                "quota",
+                                "credit limit",
+                                "credits exhausted",
+                            )
+                        ):
+                            saw_quota = True
+                            self._pool.disable(key_index, "quota")
+                            rotate = True
+                            break
+                        if (
+                            "invalidapikey" in error_type
+                            or "authentication" in error_type
+                            or any(
+                                marker in msg
+                                for marker in (
+                                    "401",
+                                    "403",
+                                    "unauthorized",
+                                    "forbidden",
+                                    "invalid api key",
+                                    "invalid_api_key",
+                                )
+                            )
+                        ):
+                            saw_auth = True
+                            self._pool.disable(key_index, "auth")
+                            rotate = True
+                            break
+                        retryable = any(
+                            marker in msg
+                            for marker in ("429", "502", "503", "504", "timeout", "rate")
+                        ) or any(
+                            marker in error_type
+                            for marker in (
+                                "timeout",
+                                "connectionerror",
+                                "sslerror",
+                                "proxyerror",
                             )
                         )
-                    ):
-                        saw_auth = True
-                        self._pool.disable(key_index)
-                        rotate = True
+                        if retryable:
+                            saw_transient = True
+                        rotate = not retryable or attempt >= MAX_RETRIES
+                    if rotate:
                         break
-                    retryable = any(
-                        marker in msg
-                        for marker in ("429", "502", "503", "504", "timeout", "rate")
-                    ) or any(
-                        marker in error_type
-                        for marker in ("timeout", "connectionerror", "sslerror", "proxyerror")
-                    )
-                    if retryable:
-                        saw_transient = True
-                    rotate = not retryable or attempt >= MAX_RETRIES
-                if rotate:
-                    break
-                await asyncio.sleep(0.5 * (attempt + 1))
+                    await asyncio.sleep(0.5 * (attempt + 1))
             if data is not None:
                 break
             if not rotate:  # pragma: no cover - defensive
