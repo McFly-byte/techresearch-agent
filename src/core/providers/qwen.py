@@ -39,6 +39,9 @@ def _global_limiter() -> asyncio.Semaphore:
 
 class QwenProvider(BaseLLMProvider):
     provider_name = "qwen"
+    provider_label = "Qwen"
+    api_key_env = "DASHSCOPE_API_KEY"
+    supports_enable_thinking = True
 
     def __init__(
         self,
@@ -72,37 +75,40 @@ class QwenProvider(BaseLLMProvider):
         carries its own ``model_id``. The base provider is never mutated, so
         parallel workers selecting different models do not race.
         """
-        return QwenProvider(
+        return self._clone(
             model_id=model_id,
-            base_url=self._base_url,
-            api_key=self._api_key,
-            timeout=self._timeout,
-            max_retries=self._max_retries,
             enable_thinking=self._enable_thinking,
-            client=self._client,
         )
 
     def with_timeout(self, timeout: float) -> QwenProvider:
         """Clone the provider with a stage-specific request timeout."""
-        return QwenProvider(
+        return self._clone(
             model_id=self.model_id,
-            base_url=self._base_url,
-            api_key=self._api_key,
             timeout=timeout,
-            max_retries=self._max_retries,
             enable_thinking=self._enable_thinking,
-            client=self._client,
         )
 
     def with_thinking(self, enabled: bool) -> QwenProvider:
         """Return a clone with Qwen hybrid thinking explicitly enabled/disabled."""
-        return QwenProvider(
+        return self._clone(
             model_id=self.model_id,
+            enable_thinking=bool(enabled),
+        )
+
+    def _clone(
+        self,
+        *,
+        model_id: str,
+        timeout: float | None = None,
+        enable_thinking: bool | None = None,
+    ) -> QwenProvider:
+        return type(self)(
+            model_id=model_id,
             base_url=self._base_url,
             api_key=self._api_key,
-            timeout=self._timeout,
+            timeout=self._timeout if timeout is None else timeout,
             max_retries=self._max_retries,
-            enable_thinking=bool(enabled),
+            enable_thinking=enable_thinking,
             client=self._client,
         )
 
@@ -115,7 +121,7 @@ class QwenProvider(BaseLLMProvider):
     ) -> LLMResponse:
         if not self.is_configured():
             raise ProviderNotConfiguredError(
-                "DASHSCOPE_API_KEY is empty; set it in .env or use LLM_PROVIDER=fake."
+                f"{self.api_key_env} is empty; set it in .env or use LLM_PROVIDER=fake."
             )
 
         # Request-level override: NEVER mutate self.model_id.
@@ -129,7 +135,7 @@ class QwenProvider(BaseLLMProvider):
         # 否则会因 finish_reason=length 被截断、解析失败。None 时不传，走服务端默认。
         if max_tokens is not None:
             payload["max_tokens"] = int(max_tokens)
-        if self._enable_thinking is not None:
+        if self.supports_enable_thinking and self._enable_thinking is not None:
             payload["enable_thinking"] = self._enable_thinking
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -154,14 +160,16 @@ class QwenProvider(BaseLLMProvider):
             for attempt in range(max_attempts):
                 remaining = deadline - loop.time()
                 if remaining <= 0:
-                    raise ProviderError(f"Qwen total deadline exceeded after {self._timeout:g}s")
+                    raise ProviderError(
+                        f"{self.provider_label} total deadline exceeded after {self._timeout:g}s"
+                    )
                 try:
                     async with asyncio.timeout(remaining):
                         async with _global_limiter():
                             resp = await client.post(url, json=payload, headers=headers)
                 except TimeoutError as e:
                     raise ProviderError(
-                        f"Qwen total deadline exceeded after {self._timeout:g}s"
+                        f"{self.provider_label} total deadline exceeded after {self._timeout:g}s"
                     ) from e
                 except httpx.TimeoutException as e:
                     last_exc = e
@@ -169,12 +177,12 @@ class QwenProvider(BaseLLMProvider):
                         delay = 2.0**attempt + random.uniform(0.0, 0.25)
                         if delay >= deadline - loop.time():
                             raise ProviderError(
-                                f"Qwen total deadline exceeded after {self._timeout:g}s"
+                                f"{self.provider_label} total deadline exceeded after {self._timeout:g}s"
                             ) from e
                         await asyncio.sleep(delay)
                         continue
                     raise ProviderError(
-                        f"Qwen request timed out after {max_attempts} attempts: {e}"
+                        f"{self.provider_label} request timed out after {max_attempts} attempts: {e}"
                     ) from e
                 except httpx.HTTPError as e:
                     last_exc = e
@@ -182,11 +190,11 @@ class QwenProvider(BaseLLMProvider):
                         delay = 2.0**attempt + random.uniform(0.0, 0.25)
                         if delay >= deadline - loop.time():
                             raise ProviderError(
-                                f"Qwen total deadline exceeded after {self._timeout:g}s"
+                                f"{self.provider_label} total deadline exceeded after {self._timeout:g}s"
                             ) from e
                         await asyncio.sleep(delay)
                         continue
-                    raise ProviderError(f"Qwen request failed: {e}") from e
+                    raise ProviderError(f"{self.provider_label} request failed: {e}") from e
 
                 if resp.status_code in _RETRYABLE_STATUS and attempt < max_attempts - 1:
                     retry_after = resp.headers.get("Retry-After", "")
@@ -197,7 +205,7 @@ class QwenProvider(BaseLLMProvider):
                     delay += random.uniform(0.0, 0.25)
                     if delay >= deadline - loop.time():
                         raise ProviderError(
-                            f"Qwen total deadline exceeded after {self._timeout:g}s"
+                            f"{self.provider_label} total deadline exceeded after {self._timeout:g}s"
                         )
                     await asyncio.sleep(delay)
                     continue
@@ -208,17 +216,21 @@ class QwenProvider(BaseLLMProvider):
                     await asyncio.wait_for(client.aclose(), timeout=2.0)
 
         if resp is None:  # 理论上不会走到这里，防御性兜底
-            raise ProviderError(f"Qwen request failed: {last_exc}")
+            raise ProviderError(f"{self.provider_label} request failed: {last_exc}")
 
         if resp.status_code == 401:
-            raise ProviderNotConfiguredError("Qwen returned 401 — check DASHSCOPE_API_KEY.")
+            raise ProviderNotConfiguredError(
+                f"{self.provider_label} returned 401 — check {self.api_key_env}."
+            )
         if resp.status_code >= 400:
-            raise ProviderError(f"Qwen returned HTTP {resp.status_code}: {resp.text[:200]}")
+            raise ProviderError(
+                f"{self.provider_label} returned HTTP {resp.status_code}: {resp.text[:200]}"
+            )
 
         data: dict[str, Any] = resp.json()
         choices = data.get("choices") or []
         if not choices:
-            raise ProviderError("Qwen response had no choices")
+            raise ProviderError(f"{self.provider_label} response had no choices")
         content = choices[0].get("message", {}).get("content", "")
         usage = data.get("usage") or {}
         prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)

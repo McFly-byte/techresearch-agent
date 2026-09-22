@@ -108,3 +108,32 @@ async def test_proxy_busy_is_transient_and_actionable() -> None:
 
     with pytest.raises(TransientToolError, match="all keys busy; retry_after=1s"):
         await provider.search("query")
+
+
+@pytest.mark.asyncio
+async def test_proxy_empty_pool_uses_quarantine_reason_without_exposing_key(
+    tmp_path: Path,
+) -> None:
+    diagnostics = tmp_path / "error_key.txt"
+    diagnostics.write_text(
+        '{"api_key":"must-not-leak","reason":"usage_unauthorized","failure_count":3}\n',
+        encoding="utf-8",
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/accounts":
+            return httpx.Response(200, json={"accounts": []})
+        return httpx.Response(
+            503,
+            json={"error": {"code": "all_tavily_accounts_exhausted", "message": "empty"}},
+        )
+
+    provider = TavilyProxySearchProvider(
+        "http://proxy.local",
+        transport=httpx.MockTransport(handler),
+        diagnostics_file=diagnostics,
+    )
+
+    with pytest.raises(ToolAuthenticationError) as caught:
+        await provider.search("query")
+    assert "must-not-leak" not in str(caught.value)

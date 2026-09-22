@@ -22,6 +22,7 @@ git submodule update --init --recursive
 
 ```dotenv
 TAVILY_PROXY_URL=http://127.0.0.1:15280
+TAVILY_PROXY_ERROR_FILE=vendor/tavily_search_sub_api/error_key.txt
 ```
 
 查看状态和停止服务：
@@ -39,6 +40,9 @@ TAVILY_PROXY_URL=http://127.0.0.1:15280
 - 所有上游 Key 额度耗尽：`ToolQuotaExceededError`
 - 所有 Key 冷却、繁忙或上游网络不可用：`TransientToolError`
 - 混合原因或诊断接口不可用：`ToolError`，消息包含脱敏错误码
+
+当连续失败的 Key 已从活动池移入 `error_key.txt`、导致 `/accounts` 为空时，适配器
+只读取隔离记录的 `reason` 字段继续分类；不会读取、记录或返回其中的 `api_key`。
 
 第三方服务不校验调用方 Authorization，并提供可写入 Key 的管理接口，因此只能监听
 本机回环地址。不要把端口映射到公网，也不要提交 `key.txt`、`error_key.txt` 或

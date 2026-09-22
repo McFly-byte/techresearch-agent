@@ -27,6 +27,7 @@ REDACTED = "***REDACTED***"
 SECRET_FIELD_NAMES: frozenset[str] = frozenset(
     {
         "dashscope_api_key",
+        "deepseek_api_key",
         "langchain_api_key",
         "tavily_api_key",
         "tavily_api_keys",
@@ -59,9 +60,19 @@ class Settings(BaseSettings):
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_request_timeout_seconds: float = 75.0
 
+    # ---- LLM / DeepSeek ----------------------------------------------------
+    deepseek_api_key: SecretStr = Field(default=SecretStr(""))
+    deepseek_model: str = "deepseek-v4-pro"
+    deepseek_model_fast: str = "deepseek-flash"
+    deepseek_verifier_model: str = "deepseek-flash"
+    deepseek_synthesis_model: str = "deepseek-v4-pro"
+    deepseek_judge_model: str = "deepseek-flash"
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_request_timeout_seconds: float = 120.0
+
     # ---- Provider selection ------------------------------------------------
     # "auto" -> pick fake when no real key, else qwen.
-    llm_provider: Literal["auto", "fake", "qwen"] = "auto"
+    llm_provider: Literal["auto", "fake", "qwen", "deepseek"] = "auto"
 
     # ---- Prompt Hub --------------------------------------------------------
     # local    : force local manifest, zero network (default).
@@ -85,6 +96,7 @@ class Settings(BaseSettings):
     # traffic goes through the proxy and the direct key pool is used only by
     # the proxy bootstrap command to populate its ignored key.txt file.
     tavily_proxy_url: str = ""
+    tavily_proxy_error_file: str = "vendor/tavily_search_sub_api/error_key.txt"
 
     # ---- Research execution ------------------------------------------------
     research_timeout_seconds: float = (
@@ -131,7 +143,11 @@ class Settings(BaseSettings):
             raise ValueError("ratio must be in (0, 1]")
         return v
 
-    @field_validator("research_timeout_seconds", "qwen_request_timeout_seconds")
+    @field_validator(
+        "research_timeout_seconds",
+        "qwen_request_timeout_seconds",
+        "deepseek_request_timeout_seconds",
+    )
     @classmethod
     def _positive_research_timeout(cls, v: float) -> float:
         if v <= 0:
@@ -146,6 +162,10 @@ class Settings(BaseSettings):
     @property
     def has_dashscope_key(self) -> bool:
         return bool(self.dashscope_api_key.get_secret_value().strip())
+
+    @property
+    def has_deepseek_key(self) -> bool:
+        return bool(self.deepseek_api_key.get_secret_value().strip())
 
     @property
     def has_tavily_key(self) -> bool:
@@ -176,14 +196,47 @@ class Settings(BaseSettings):
     def has_langsmith_key(self) -> bool:
         return bool(self.langchain_api_key.get_secret_value().strip())
 
-    def resolved_provider(self) -> Literal["fake", "qwen"]:
+    def resolved_provider(self) -> Literal["fake", "qwen", "deepseek"]:
         """Which LLM provider the factory should instantiate right now."""
         if self.llm_provider == "fake":
             return "fake"
         if self.llm_provider == "qwen":
             return "qwen"
-        # auto: qwen only when a key is actually present.
+        if self.llm_provider == "deepseek":
+            return "deepseek"
+        # auto remains backward-compatible: qwen when configured, else fake.
         return "qwen" if self.has_dashscope_key else "fake"
+
+    def primary_model(self) -> str:
+        return self.deepseek_model if self.resolved_provider() == "deepseek" else self.qwen_model
+
+    def fast_model(self) -> str:
+        return (
+            self.deepseek_model_fast
+            if self.resolved_provider() == "deepseek"
+            else self.qwen_model_fast
+        )
+
+    def verifier_model(self) -> str:
+        return (
+            self.deepseek_verifier_model
+            if self.resolved_provider() == "deepseek"
+            else self.qwen_verifier_model
+        )
+
+    def synthesis_model(self) -> str:
+        return (
+            self.deepseek_synthesis_model
+            if self.resolved_provider() == "deepseek"
+            else self.qwen_model
+        )
+
+    def judge_model(self) -> str:
+        return (
+            self.deepseek_judge_model
+            if self.resolved_provider() == "deepseek"
+            else self.qwen_verifier_model
+        )
 
     def safe_dict(self) -> dict[str, object]:
         """Return a JSON-serialisable view with all secrets masked.
@@ -234,6 +287,7 @@ def has_any_real_key() -> bool:
     s = get_settings()
     return (
         s.has_dashscope_key
+        or s.has_deepseek_key
         or s.has_tavily_key
         or s.has_langsmith_key
         or bool(s.feishu_app_secret.get_secret_value().strip())

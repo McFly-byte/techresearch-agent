@@ -1,7 +1,7 @@
 # evals/ — 可复现评测
 
 > 默认迭代集是固定的 **Core10**。全量 132 题仍需显式确认。
-> Qwen judge 的结果统一标记为 `qwen-nonofficial`；
+> LLM judge 的结果按 provider/model 标记为非官方预评；
 > `official_judge = not_run (requires GPT-5.5)`。
 
 ## 目录结构
@@ -46,8 +46,9 @@ python -m evals.cli run `
 
 默认时限为：整题 900 秒、研究 420 秒、验证与合成 180 秒、judge 240 秒。
 默认并发为 2 道题，每题 2 个研究 worker；每题写作阶段最多并发核验 2 条声明，
-因此研究和写作阶段都能使用但不会超过全局 Qwen 4 路容量。结构化抽取、核验、
-合成和非官方 judge 会关闭 Qwen thinking，避免推理 token 占用主要耗时。
+因此研究和写作阶段都能使用但不会超过全局 LLM 4 路容量。结构化抽取、核验和
+非官方 judge 使用所选 provider 的快速模型；最终综合使用配置的综合模型。Qwen
+关闭 thinking；DeepSeek 通过显式模型 ID 区分 flash/pro。
 这些值均可通过对应 CLI 参数覆盖。`--resume` 会核对数据集 hash 和子集元数据，
 防止把不同数据或不同 qid 清单混入同一次实验。
 

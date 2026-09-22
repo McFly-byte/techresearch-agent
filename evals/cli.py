@@ -40,9 +40,11 @@ def _resolve_judge(kind: str):
     from core.providers.factory import build_provider
 
     llm = build_provider()
+    settings = get_settings()
+    if hasattr(llm, "with_model"):
+        llm = llm.with_model(settings.judge_model())
     if hasattr(llm, "with_thinking"):
         llm = llm.with_thinking(False)
-    settings = get_settings()
     provider_name = settings.resolved_provider()
     return LLMRubricJudge(llm=llm), "llm", f"{provider_name}/{getattr(llm, 'model_id', '')}"
 
@@ -64,7 +66,7 @@ def main() -> None:
     "--mode",
     type=click.Choice(["fake", "live"]),
     default="fake",
-    help="fake = offline deterministic; live = real Qwen + Tavily.",
+    help="fake = offline deterministic; live = real configured LLM + Tavily.",
 )
 @click.option(
     "--judge",

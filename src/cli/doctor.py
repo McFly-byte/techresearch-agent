@@ -58,6 +58,7 @@ def doctor(ctx: click.Context) -> None:
     click.echo("Optional external integrations (only needed in later phases):")
     optional: list[tuple[str, bool, str]] = [
         ("DashScope / Qwen", s.has_dashscope_key, "Needed in phase 1+ for real LLM calls."),
+        ("DeepSeek", s.has_deepseek_key, "Alternative real LLM provider."),
         ("LangSmith trace", s.has_langsmith_key, "Needed for observability (phase 1+)."),
         ("Tavily search", s.has_tavily_search, "Needed for web search (phase 1+)."),
         (

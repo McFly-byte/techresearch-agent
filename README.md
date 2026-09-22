@@ -2,7 +2,7 @@
 
 一个面向技术调研的多智能体研究应用。项目使用 LangGraph 组织 Planner、Supervisor 和 Worker，执行搜索、网页抓取、事实提取与反思，并在生成报告后重新抓取引用来源进行验证。
 
-> 当前定位：**研究型 MVP**。离线 fake 模式可直接运行和测试；真实联网模式已有 Tavily、Qwen、LangSmith 与飞书适配，但仍缺少认证、分布式任务队列、生产级 SSE 和部署配置。
+> 当前定位：**研究型 MVP**。离线 fake 模式可直接运行和测试；真实联网模式已有 Tavily、Qwen/DeepSeek、LangSmith 与飞书适配，但仍缺少认证、分布式任务队列、生产级 SSE 和部署配置。
 
 ## 核心能力
 
@@ -112,7 +112,7 @@ tra prompts validate
 | 模式 | 搜索/抓取/模型 | 网络 | 用途 |
 |---|---|---|---|
 | fake | 固定 SearchResult、FakeFetcher、FakeLLM | 强制关闭 | 开发、测试、演示 |
-| live | Tavily、真实网页、Qwen | 开启 | 真实调研与正式评测 |
+| live | Tavily、真实网页、Qwen 或 DeepSeek | 开启 | 真实调研与正式评测 |
 
 fake 报告会显示测试数据警告。不得将 fake 结果作为真实研究结论或 benchmark 成绩。
 

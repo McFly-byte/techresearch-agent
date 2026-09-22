@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -284,6 +286,7 @@ class TavilyProxySearchProvider:
         *,
         timeout: float = SEARCH_TIMEOUT_S,
         transport: httpx.AsyncBaseTransport | None = None,
+        diagnostics_file: Path | None = None,
     ) -> None:
         normalized = base_url.strip().rstrip("/")
         if not normalized.startswith(("http://", "https://")):
@@ -293,6 +296,7 @@ class TavilyProxySearchProvider:
         self._base_url = normalized
         self._timeout = timeout
         self._transport = transport
+        self._diagnostics_file = diagnostics_file
 
     async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
         try:
@@ -345,7 +349,7 @@ class TavilyProxySearchProvider:
                 f"tavily proxy upstream unavailable; code={code or response.status_code}"
             )
         if code == "all_tavily_accounts_exhausted":
-            await _raise_exhausted_proxy_pool(client, code)
+            await _raise_exhausted_proxy_pool(client, code, self._diagnostics_file)
         if response.status_code in {401, 403}:
             raise ToolAuthenticationError(
                 f"tavily proxy rejected the request; code={code or response.status_code}"
@@ -372,7 +376,11 @@ def _proxy_error_details(response: httpx.Response) -> tuple[str, str]:
     return str(error.get("code", "")), str(error.get("message", ""))
 
 
-async def _raise_exhausted_proxy_pool(client: httpx.AsyncClient, code: str) -> None:
+async def _raise_exhausted_proxy_pool(
+    client: httpx.AsyncClient,
+    code: str,
+    diagnostics_file: Path | None,
+) -> None:
     """Resolve the generic proxy exhaustion response to an actionable cause."""
     try:
         response = await client.get("/accounts")
@@ -380,21 +388,30 @@ async def _raise_exhausted_proxy_pool(client: httpx.AsyncClient, code: str) -> N
         payload = response.json()
         accounts = payload.get("accounts", []) if isinstance(payload, dict) else []
     except (httpx.HTTPError, ValueError):
-        raise ToolError(
-            f"tavily proxy has no available upstream key; code={code}; diagnostics=unavailable"
-        ) from None
+        accounts = []
 
-    errors = " ".join(
+    errors = [
         str(account.get("last_error", "")).lower()
         for account in accounts
         if isinstance(account, dict)
-    )
+    ]
+    if not any(errors):
+        errors.extend(_quarantine_reasons(diagnostics_file))
+    combined_errors = " ".join(errors)
     has_auth = any(
-        marker in errors
-        for marker in ("401", "403", "unauthorized", "forbidden", "deactivated", "invalid")
+        marker in combined_errors
+        for marker in (
+            "401",
+            "403",
+            "unauthorized",
+            "forbidden",
+            "deactivated",
+            "invalid",
+            "usage_unauthorized",
+        )
     )
     has_quota = any(
-        marker in errors
+        marker in combined_errors
         for marker in ("432", "433", "quota", "usage limit", "credit", "exhausted")
     )
     if has_auth and not has_quota:
@@ -410,8 +427,26 @@ async def _raise_exhausted_proxy_pool(client: httpx.AsyncClient, code: str) -> N
             f"tavily proxy pool exhausted by mixed authentication and quota failures; code={code}"
         )
     raise ToolError(
-        f"tavily proxy has no available upstream key; code={code}; inspect=/accounts"
+        f"tavily proxy has no available upstream key; code={code}; "
+        "diagnostics=unavailable"
     )
+
+
+def _quarantine_reasons(path: Path | None) -> list[str]:
+    """Read only reason fields from the proxy quarantine file, never API keys."""
+    if path is None or not path.is_file():
+        return []
+    reasons: list[str] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if isinstance(payload, dict):
+                reasons.append(str(payload.get("reason", "")).lower())
+    except (OSError, ValueError):
+        return []
+    return reasons
 
 
 def _search_results(data: dict[str, Any]) -> list[SearchResult]:
@@ -451,7 +486,13 @@ def build_search_provider(settings: Settings) -> Any:
     if settings.llm_provider == "fake" or not settings.has_tavily_search:
         return FakeSearchProvider()
     if settings.tavily_proxy_url.strip():
-        return TavilyProxySearchProvider(settings.tavily_proxy_url)
+        diagnostics_file = Path(settings.tavily_proxy_error_file)
+        if not diagnostics_file.is_absolute():
+            diagnostics_file = Path.cwd() / diagnostics_file
+        return TavilyProxySearchProvider(
+            settings.tavily_proxy_url,
+            diagnostics_file=diagnostics_file,
+        )
     return TavilySearchProvider(api_key=settings.tavily_key_pool())
 
 

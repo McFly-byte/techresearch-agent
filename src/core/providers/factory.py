@@ -9,6 +9,7 @@ from typing import Literal
 from ..config import Settings, get_settings
 from ..exceptions import ConfigurationError
 from .base import BaseLLMProvider
+from .deepseek import DeepSeekProvider
 from .fake import FakeLLM
 from .qwen import QwenProvider
 
@@ -31,6 +32,21 @@ def build_provider(
 
     if provider == "fake":
         return FakeLLM(model_id="fake-1")
+
+    if provider == "deepseek":
+        model = s.deepseek_model if level == "default" else s.deepseek_model_fast
+        if not s.has_deepseek_key:
+            raise ConfigurationError(
+                f"llm_provider=deepseek but DEEPSEEK_API_KEY is empty (level={level})."
+            )
+        return DeepSeekProvider(
+            model_id=model,
+            base_url=s.deepseek_base_url,
+            api_key=s.deepseek_api_key.get_secret_value(),
+            timeout=s.deepseek_request_timeout_seconds,
+            chat_model=s.deepseek_model_fast,
+            reasoner_model=s.deepseek_model,
+        )
 
     # qwen
     model = s.qwen_model if level == "default" else s.qwen_model_fast

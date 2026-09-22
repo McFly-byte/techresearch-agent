@@ -4,7 +4,7 @@ Mode contract (P0 correction):
 - `mode="fake"` (DEFAULT): forces FakeLLM + FakeSearchProvider + FakeFetcher.
   NEVER touches the network, even if real API keys are present in the
   environment. Fake is fake regardless of settings.
-- `mode="live"`: requires TAVILY_API_KEY AND a real LLM provider (Qwen).
+- `mode="live"`: requires Tavily search AND a real Qwen or DeepSeek provider.
   Fails closed (ConfigurationError) if required keys are missing. Never
   silently degrades to fake.
 - `mode` must be exactly "fake" or "live"; anything else raises ValueError
@@ -97,7 +97,7 @@ def _fake_kit(settings: Settings) -> ProviderKit:
 
     Forces FakeLLM regardless of settings. Even if the environment has a
     real DashScope/Tavily key, fake mode must NOT read it or construct a
-    Qwen provider. Fake is fake.
+    real provider. Fake is fake.
     """
     hits = [
         SearchResult(title="LangGraph overview", url=_FAKE_URLS[0], snippet="graph of nodes"),
@@ -137,10 +137,11 @@ def _live_kit(settings: Settings) -> ProviderKit:
             "mode=live requires a real LLM provider, but llm_provider='fake'. "
             "Set llm_provider='auto' or 'qwen' and provide DASHSCOPE_API_KEY."
         )
-    if settings.llm_provider in ("qwen", "auto") and not settings.has_dashscope_key:
+    if settings.resolved_provider() == "fake":
         raise ConfigurationError(
-            f"mode=live requires DASHSCOPE_API_KEY (llm_provider={settings.llm_provider!r} "
-            "resolved without a key). Set DASHSCOPE_API_KEY or use mode='fake'."
+            f"mode=live requires configured Qwen (DASHSCOPE_API_KEY) or "
+            f"DeepSeek (DEEPSEEK_API_KEY) provider "
+            f"(llm_provider={settings.llm_provider!r})."
         )
 
     from tools.fetchers import HttpPageFetcher
@@ -182,12 +183,12 @@ def _build_router(settings: Settings, llm: Any) -> ModelRouter:
     """Wire model downgrade routing from settings.
 
     The preferred model is the provider's OWN model (in live mode this IS
-    ``settings.qwen_model``); the cheap downgrade model is read from
-    ``settings.qwen_model_fast`` so the fast/cheap model is actually configured
+    the selected provider's primary model); the cheap downgrade model is read
+    from the selected provider's fast model so routing remains vendor-neutral
     instead of always ``None``.
     """
-    preferred = getattr(llm, "model_id", None) or settings.qwen_model
-    return ModelRouter(preferred=preferred, cheap=settings.qwen_model_fast)
+    preferred = getattr(llm, "model_id", None) or settings.primary_model()
+    return ModelRouter(preferred=preferred, cheap=settings.fast_model())
 
 
 class ResearchRunner:
@@ -355,12 +356,12 @@ class ResearchRunner:
             self._tracing.start_span("write", task_id=rec.task_id)
             self._emit(rec, stage="verify_start", data={})
             # Stage4 P0-4: live mode injects an independent LLM-backed NLI
-            # judge (scoped to qwen_verifier_model). Fake mode keeps the
+            # judge (scoped to the selected provider's verifier model). Fake mode keeps the
             # deterministic heuristic so offline tests never call a network.
             from service.verifier import LLMNLI, CitationVerifier
 
             if kit.mode == "live":
-                verifier_llm = kit.llm.with_model(self._settings.qwen_verifier_model)
+                verifier_llm = kit.llm.with_model(self._settings.verifier_model())
                 if hasattr(verifier_llm, "with_timeout"):
                     verifier_llm = verifier_llm.with_timeout(self._verifier_call_timeout)
                 if hasattr(verifier_llm, "with_thinking"):
@@ -372,10 +373,18 @@ class ResearchRunner:
                 verifier = CitationVerifier(fetcher=kit.fetcher, nli=nli)
             else:
                 verifier = CitationVerifier(fetcher=kit.fetcher)
-            synthesis_llm = kit.llm if kit.mode == "live" else None
+            synthesis_llm = (
+                kit.llm.with_model(self._settings.synthesis_model())
+                if kit.mode == "live"
+                else None
+            )
             if synthesis_llm is not None and hasattr(synthesis_llm, "with_timeout"):
                 synthesis_llm = synthesis_llm.with_timeout(self._synthesis_call_timeout)
-            if synthesis_llm is not None and hasattr(synthesis_llm, "with_thinking"):
+            if (
+                synthesis_llm is not None
+                and getattr(synthesis_llm, "provider_name", "") == "qwen"
+                and hasattr(synthesis_llm, "with_thinking")
+            ):
                 synthesis_llm = synthesis_llm.with_thinking(False)
             builder = VerifiedReportBuilder(
                 verifier=verifier,

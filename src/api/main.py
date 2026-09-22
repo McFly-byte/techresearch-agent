@@ -136,7 +136,7 @@ def create_app() -> FastAPI:
             "has_external_keys": has_any_real_key(),
             "llm": provider.describe(),
             "config": {
-                "qwen_model": s.qwen_model,
+                "model": s.primary_model(),
                 "cors_origins": s.cors_origin_list,
             },
         }
