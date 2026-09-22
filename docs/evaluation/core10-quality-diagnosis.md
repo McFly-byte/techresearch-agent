@@ -124,3 +124,11 @@ VerifiedReportBuilder 旧逻辑仅取 `facts_to_claims(facts)[:8]`。并发 fact
 三分钟版本：项目最初已经解决“跑不完”和“不可观测”，但固定 Core10 的完成率 100% 并不等于研究质量高。我先重算 612 条 rubric，排除 Judge 解析和本地聚合错误，再把 trace、Token 和代码控制流对齐。证据显示 presentation 约 48% 通过，但事实和分析只有约 3%–4%；进一步发现长问题让四个 Worker 实际发出相同 query、extractor 不知道子任务、writer 只看前 8 条事实。于是没有增加 Agent 数量，而是增加一个问题派生的 coverage contract，贯穿 requirement、query、evidence 和 answer，并用轮询选择避免并发顺序偏置。同时把重试历史与最终质量 Experiment 分开。最后用固定 Core4 做同题对照，只有真实提升且 Token/延迟受控才扩大到 Core10/Full132。
 
 面试追问重点：为什么不能把 rubric 给 Agent（会污染 benchmark）；为什么 deterministic checklist 比新增 Planner LLM 更合适（可解释、零额外调用、先验证最小方案）；为什么提高 verifier 上限仍可能节省总 Token（旧 Research 重复占 56%）；为什么保留原 attempt Experiment（运行可靠性审计）又新增 final snapshot（最终质量口径）。
+
+## 实施后的验证状态（2026-09-22）
+
+- v7 已生成零模型调用的最终状态快照：`77971487-112d-4775-b9fd-7ed31eea01fe`。快照包含 10 个唯一 qid、10 个 completed，并保留原始 source trace；其反馈均分为 `0.074580`，与本地精确均分 `0.074584` 的差异来自 LangSmith 四位小数存储，而不是评分逻辑差异。
+- 固定 Core4（task7、task8、task17、task71）按 q2/w2 和原超时配置启动后出现系统性搜索失败，因此遵守停止条件，没有继续 Core10。结果为 completed=0、failed=4；task7 在 Research 420 秒超时，另外三题没有产生 facts/citations。
+- 对 Core4 trace 的只读统计显示 64 次搜索调用中，39 次为 permanent fetch/tool failure、24 次为 transient network failure、1 次未形成有效结果。随后用最小查询逐个轮换本地配置的五个 Key，Tavily SDK 均返回 `InvalidAPIKeyError`。只核对了 Key 数量、长度、前缀和唯一性，没有读取或输出 Key 内容。
+- 该事件证明的是当前外部搜索凭据不可用，不能用于计算改进后的质量、Token 或延迟；它不支持“coverage 改造有效”或“coverage 改造无效”的结论。代码已补充 SDK 异常类型识别，使全部 Key 被拒绝时稳定抛出脱敏的 `ToolAuthenticationError`，避免再次消耗大量无效重试。
+- 在有效 Tavily 凭据恢复前，不运行新的 Core10 或 Full132。恢复后应使用新的 `drb2_core4_coverage_v2` 目录和独立 Experiment 重跑同一四题，而不是向本次失败目录写入结果。
