@@ -180,3 +180,27 @@ v2/v3 Experiment：
 提交 `42868e1` 将第三方 `tavily_search_sub_api` 以固定 Git 子模块接入，并在主项目增加了独立代理适配器、安全启动封装和稳定错误映射。代理固定监听 `127.0.0.1`、单进程运行、每个 Key 最大并发为 1；`.env` 中的 Key 只会原子同步到被 Git 忽略的 `key.txt`，不会进入日志或提交。主项目不负责判断 Key 来源，只负责把代理返回的“全部鉴权失败”“全部额度耗尽”“全部冷却/繁忙”和“上游不可用”分别映射为可审计的异常类型。
 
 验证包括第三方仓库 `110 passed, 1 skipped`，主项目 `561 passed`，Ruff 全部通过，mypy 107 个源文件无问题。真实链路已经跑通到错误边界：代理对五个槽位的 `/usage` 均收到 401，随后主项目请求 `/search` 得到 `all_tavily_accounts_exhausted`；适配器读取脱敏 `/accounts` 状态后准确抛出 `ToolAuthenticationError: tavily proxy rejected all upstream credentials`。另用官方 Tavily SDK 对第一个槽位复核，原始原因是关联账户已停用。因此没有创建新的失败 Core4 Experiment；代理保持本机运行，替换 Key 后执行 `scripts/tavily-proxy.ps1 start` 即会重新同步并热加载，随后从新的 Core4 目录继续。
+
+## 15. DeepSeek Core4 v8 完整复验（2026-09-23）
+
+本节是最新状态，替代前文“凭据阻塞、改进后在线质量尚未测量”的时间点结论。项目切换为 DeepSeek 后，v7 暴露了另一个独立问题：`deepseek-flash` 默认生成隐藏推理，可能在输出上限内只返回 `reasoning_content` 而正文为空。task71 因此在检索和模型调用均有消耗的情况下触发空报告质量门禁。提交 `7e18efe` 为有硬时限的抽取、验证、合成和 Judge 阶段显式发送 `thinking.type=disabled`，同时保留 `deepseek-v4-pro + enabled` 作为非默认的深度推理能力。
+
+同一固定 Core4 使用全新目录 `drb2_core4_coverage_deepseek_v8` 从零运行，配置为题目并发 2、题内 Worker 2、DeepSeek 非官方 Judge。Tavily 代理全程维持 1/1 Key 可用、每 Key 最大并发 1，结束后 `last_error` 为空。
+
+| 指标 | DeepSeek v7 | DeepSeek v8 |
+|---|---:|---:|
+| completed / failed | 3 / 1 | 4 / 0 |
+| 非官方 Judge 均分 | 0.004386 | 0.075777 |
+| pass rate（阈值 0.5） | 0% | 0% |
+| 平均 Token | 45,394.25 | 35,195.00 |
+| 平均耗时 | 148.89s | 162.50s |
+| 平均搜索轮数 | 2.50 | 4.75 |
+| 总 Token | 223,708 | 140,780 |
+
+v8 逐题结果：task7=`0.137931`、task8=`0.115385`、task17=`0.035088`、task71=`0.014706`；四题均有非空正文和 citation，耗时范围 136.72–214.45 秒。与 v7 相比，完成率恢复且总 Token 下降 37.07%，但平均耗时上升 9.14%，主要因为四题都完成了更多研究轮次。该对比同时包含“失败转完成”和模型输出契约修复，不能把分数变化单独归因于研究质量提升。
+
+v8 Experiment：`https://smith.langchain.com/o/4f508cdf-ba06-4214-b90a-689e3ebdc812/datasets/3107dfc1-7654-4bc9-95ed-9654ca558821/compare?selectedSessions=b6b828b2-a987-4bb2-b136-9445ea387490`。
+
+最新离线门禁为 566 passed、Ruff check 通过、mypy 114 个源文件无问题；本次修改文件的 Ruff format check 通过。全仓 format check 仍报告 13 个既有文件与当前 Ruff 版本的格式差异，未在本轮做无关批量格式化。
+
+结论是 provider 稳定性门禁已通过，但质量门禁没有通过：最高分仍只有 0.137931，远低于 0.5。下一步若继续，应针对 v8 的 coverage matrix 和未通过 rubric 做不泄漏答案的证据覆盖诊断，再决定是否值得运行干净 Core10；当前仍不应运行 Full132。

@@ -19,6 +19,11 @@
 model 和 Token。抽取、NLI 与 Judge 还会启用 OpenAI 兼容 JSON mode。DeepSeek Judge 只作为新的非官方预评口径，不与历史
 `qwen-nonofficial` 分数直接混合。
 
+固定 Core4 v8 的在线复验在四题上达到 `4 completed / 0 failed`，相较 v7 的
+`3 / 1` 消除了空正文失败；平均 Token 从 `45,394.25` 降至 `35,195.00`。不过
+非官方 Judge 均分只有 `0.075777`、pass rate 仍为 0%，因此该路由目前只证明了
+输出契约和运行稳定性，不代表研究质量已经达标。
+
 环境变量：
 
 ```dotenv
