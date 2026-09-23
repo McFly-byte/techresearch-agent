@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from core.providers.qwen import QwenProvider
@@ -32,6 +34,7 @@ class DeepSeekProvider(QwenProvider):
         client: httpx.AsyncClient | None = None,
         chat_model: str = "deepseek-flash",
         reasoner_model: str = "deepseek-v4-pro",
+        json_mode: bool = False,
     ) -> None:
         super().__init__(
             model_id=model_id,
@@ -44,11 +47,17 @@ class DeepSeekProvider(QwenProvider):
         )
         self._chat_model = chat_model
         self._reasoner_model = reasoner_model
+        self._json_mode = json_mode
 
     def with_thinking(self, enabled: bool) -> DeepSeekProvider:
         return self._clone(
             model_id=self._reasoner_model if enabled else self._chat_model
         )
+
+    def with_json_mode(self, enabled: bool = True) -> DeepSeekProvider:
+        clone = self._clone(model_id=self.model_id)
+        clone._json_mode = bool(enabled)
+        return clone
 
     def _clone(
         self,
@@ -67,7 +76,12 @@ class DeepSeekProvider(QwenProvider):
             client=self._client,
             chat_model=self._chat_model,
             reasoner_model=self._reasoner_model,
+            json_mode=self._json_mode,
         )
+
+    def _augment_payload(self, payload: dict[str, Any]) -> None:
+        if self._json_mode:
+            payload["response_format"] = {"type": "json_object"}
 
 
 __all__ = ["DeepSeekProvider"]

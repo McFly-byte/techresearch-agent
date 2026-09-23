@@ -188,7 +188,8 @@ def _build_router(settings: Settings, llm: Any) -> ModelRouter:
     instead of always ``None``.
     """
     preferred = getattr(llm, "model_id", None) or settings.primary_model()
-    return ModelRouter(preferred=preferred, cheap=settings.fast_model())
+    fast = settings.fast_model()
+    return ModelRouter(preferred=preferred, cheap=None if fast == preferred else fast)
 
 
 class ResearchRunner:

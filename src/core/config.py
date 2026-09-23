@@ -62,10 +62,11 @@ class Settings(BaseSettings):
 
     # ---- LLM / DeepSeek ----------------------------------------------------
     deepseek_api_key: SecretStr = Field(default=SecretStr(""))
-    deepseek_model: str = "deepseek-v4-pro"
+    deepseek_model: str = "deepseek-flash"
     deepseek_model_fast: str = "deepseek-flash"
+    deepseek_reasoner_model: str = "deepseek-v4-pro"
     deepseek_verifier_model: str = "deepseek-flash"
-    deepseek_synthesis_model: str = "deepseek-v4-pro"
+    deepseek_synthesis_model: str = "deepseek-flash"
     deepseek_judge_model: str = "deepseek-flash"
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_request_timeout_seconds: float = 120.0

@@ -45,6 +45,8 @@ def _resolve_judge(kind: str):
         llm = llm.with_model(settings.judge_model())
     if hasattr(llm, "with_thinking"):
         llm = llm.with_thinking(False)
+    if hasattr(llm, "with_json_mode"):
+        llm = llm.with_json_mode(True)
     provider_name = settings.resolved_provider()
     return LLMRubricJudge(llm=llm), "llm", f"{provider_name}/{getattr(llm, 'model_id', '')}"
 

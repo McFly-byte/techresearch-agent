@@ -137,6 +137,7 @@ class QwenProvider(BaseLLMProvider):
             payload["max_tokens"] = int(max_tokens)
         if self.supports_enable_thinking and self._enable_thinking is not None:
             payload["enable_thinking"] = self._enable_thinking
+        self._augment_payload(payload)
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -276,6 +277,9 @@ class QwenProvider(BaseLLMProvider):
                 "total_tokens": str(usage.get("total_tokens", "")),
             },
         )
+
+    def _augment_payload(self, payload: dict[str, Any]) -> None:
+        """Provider-specific request options; base Qwen needs no additions."""
 
     def describe(self) -> dict[str, str]:
         out = super().describe()

@@ -45,7 +45,7 @@ def build_provider(
             api_key=s.deepseek_api_key.get_secret_value(),
             timeout=s.deepseek_request_timeout_seconds,
             chat_model=s.deepseek_model_fast,
-            reasoner_model=s.deepseek_model,
+            reasoner_model=s.deepseek_reasoner_model,
         )
 
     # qwen

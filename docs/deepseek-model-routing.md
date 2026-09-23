@@ -6,15 +6,16 @@
 
 | 阶段 | 模型 | 选择理由 |
 |---|---|---|
-| Planner、复杂研究决策、反思 | `deepseek-v4-pro` | 优先复杂推理与覆盖规划 |
+| 当前确定性 Planner | 无 LLM | 避免为可解释拆解增加调用 |
 | Fact extraction | `deepseek-flash` | 高并发结构化抽取，控制延迟与成本 |
 | Citation verifier | `deepseek-flash` | 判断任务短、可并行，需稳定格式 |
-| Final synthesis | `deepseek-v4-pro` | 需要跨证据与 coverage matrix 综合 |
+| Final synthesis | `deepseek-flash` | v4-pro 实测耗尽输出预算且超时，flash 更符合硬时限 |
 | 非官方 rubric Judge | `deepseek-flash` | 与回答模型区分用途，控制评测成本 |
+| 可选显式深度推理 | `deepseek-v4-pro` | 保留能力，但不进入当前有硬时限的 benchmark 主链 |
 
 `DeepSeekProvider.with_thinking()` 不发送 Qwen 专属的 `enable_thinking` 参数；开启与
 关闭通过上述两个模型 ID 切换。LangSmith usage metadata 会记录实际返回的 provider、
-model 和 Token。DeepSeek Judge 只作为新的非官方预评口径，不与历史
+model 和 Token。抽取、NLI 与 Judge 还会启用 OpenAI 兼容 JSON mode。DeepSeek Judge 只作为新的非官方预评口径，不与历史
 `qwen-nonofficial` 分数直接混合。
 
 环境变量：
@@ -22,10 +23,11 @@ model 和 Token。DeepSeek Judge 只作为新的非官方预评口径，不与�
 ```dotenv
 LLM_PROVIDER=deepseek
 DEEPSEEK_API_KEY=
-DEEPSEEK_MODEL=deepseek-v4-pro
+DEEPSEEK_MODEL=deepseek-flash
 DEEPSEEK_MODEL_FAST=deepseek-flash
+DEEPSEEK_REASONER_MODEL=deepseek-v4-pro
 DEEPSEEK_VERIFIER_MODEL=deepseek-flash
-DEEPSEEK_SYNTHESIS_MODEL=deepseek-v4-pro
+DEEPSEEK_SYNTHESIS_MODEL=deepseek-flash
 DEEPSEEK_JUDGE_MODEL=deepseek-flash
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_REQUEST_TIMEOUT_SECONDS=120

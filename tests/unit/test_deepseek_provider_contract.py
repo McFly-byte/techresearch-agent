@@ -40,9 +40,15 @@ async def test_deepseek_routes_thinking_by_model_without_qwen_flag() -> None:
 
     await provider.with_thinking(False).acomplete([Message(role="user", content="extract")])
     await provider.with_thinking(True).acomplete([Message(role="user", content="plan")])
+    await provider.with_json_mode().acomplete([Message(role="user", content="return JSON")])
 
-    assert [body["model"] for body in bodies] == ["deepseek-flash", "deepseek-v4-pro"]
+    assert [body["model"] for body in bodies] == [
+        "deepseek-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-pro",
+    ]
     assert all("enable_thinking" not in body for body in bodies)
+    assert bodies[2]["response_format"] == {"type": "json_object"}
     await client.aclose()
 
 
@@ -56,10 +62,10 @@ def test_deepseek_factory_and_stage_models_are_explicit() -> None:
     provider = build_provider(settings=settings)
 
     assert isinstance(provider, DeepSeekProvider)
-    assert provider.model_id == "deepseek-v4-pro"
+    assert provider.model_id == "deepseek-flash"
     assert settings.fast_model() == "deepseek-flash"
     assert settings.verifier_model() == "deepseek-flash"
-    assert settings.synthesis_model() == "deepseek-v4-pro"
+    assert settings.synthesis_model() == "deepseek-flash"
     assert settings.judge_model() == "deepseek-flash"
     assert settings.safe_dict()["deepseek_api_key"] == REDACTED
     assert "sk-secret" not in repr(settings.safe_dict())

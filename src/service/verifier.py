@@ -518,14 +518,17 @@ class LLMNLI:
             ):
                 # NLI returns one tiny JSON verdict. Bounding output prevents a
                 # malformed verbose response from consuming the write budget.
-                params = inspect.signature(self._llm.acomplete).parameters
+                llm = self._llm
+                if hasattr(llm, "with_json_mode"):
+                    llm = llm.with_json_mode(True)
+                params = inspect.signature(llm.acomplete).parameters
                 supports_max_tokens = "max_tokens" in params or any(
                     p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
                 )
                 if supports_max_tokens:
-                    resp = await self._llm.acomplete(messages, max_tokens=256)
+                    resp = await llm.acomplete(messages, max_tokens=256)
                 else:
-                    resp = await self._llm.acomplete(messages)
+                    resp = await llm.acomplete(messages)
         except NLIProviderError:
             # Re-raise our own stable errors unchanged (they already carry the
             # redacted code); the wrapping context managers close cleanly.
@@ -543,7 +546,7 @@ class LLMNLI:
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
         try:
-            data = json.loads(cleaned)
+            data = _parse_json_object(cleaned)
         except (json.JSONDecodeError, ValueError) as e:
             raise NLIParseError(
                 "nli_parse_error",
@@ -558,6 +561,27 @@ class LLMNLI:
             error_type="invalid_verdict",
             model_id=getattr(self._llm, "model_id", ""),
         )
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    """Parse an object even when a provider adds prose around valid JSON."""
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    raise json.JSONDecodeError("no JSON object found", text, 0)
 
 
 __all__ = [

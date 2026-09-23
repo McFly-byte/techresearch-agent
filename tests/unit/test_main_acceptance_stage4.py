@@ -258,6 +258,27 @@ class TestBAsyncNLI:
         with pytest.raises(NLIParseError):
             await nli("c", "e")
 
+    @pytest.mark.asyncio
+    async def test_llm_nli_extracts_json_object_from_provider_prose(self) -> None:
+        class _ProseLLM(BaseLLMProvider):
+            provider_name = "scripted"
+            model_id = "m"
+
+            def is_configured(self) -> bool:
+                return True
+
+            async def acomplete(
+                self, messages: list[Message], *, model_id: str | None = None
+            ) -> LLMResponse:
+                return LLMResponse(
+                    text='Analysis complete. {"verdict":"entailment"} End.',
+                    model="m",
+                    provider="scripted",
+                )
+
+        nli = LLMNLI(_ProseLLM(), registry=PromptRegistry())
+        assert await nli("claim", "evidence") == "entailment"
+
     def test_heuristic_nli_wraps_to_async(self) -> None:
         """The default heuristic NLI must be awaitable (async wrapper) so the
         verifier has ONE uniform await path."""

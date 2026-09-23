@@ -378,6 +378,8 @@ class LLMFactExtractor:
         """
         commit = self._prompt_commits.get(prompt_name, "")
         with self._tracing.llm_prompt_span(prompt_name, commit):
+            if hasattr(provider, "with_json_mode"):
+                provider = provider.with_json_mode(True)
             kwargs: dict[str, Any] = {}
             if model_id is not None and self._provider_accepts_model_id(provider):
                 kwargs["model_id"] = model_id

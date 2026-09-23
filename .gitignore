@@ -74,6 +74,7 @@ test-results/
 
 # ---- Agent workspace / scratch --------------------------------------------
 .sessions/
+.codex/
 
 # ---- Vendored Tavily proxy local secrets/runtime --------------------------
 vendor/tavily_search_sub_api/key.txt
