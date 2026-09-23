@@ -381,11 +381,7 @@ class ResearchRunner:
             )
             if synthesis_llm is not None and hasattr(synthesis_llm, "with_timeout"):
                 synthesis_llm = synthesis_llm.with_timeout(self._synthesis_call_timeout)
-            if (
-                synthesis_llm is not None
-                and getattr(synthesis_llm, "provider_name", "") == "qwen"
-                and hasattr(synthesis_llm, "with_thinking")
-            ):
+            if synthesis_llm is not None and hasattr(synthesis_llm, "with_thinking"):
                 synthesis_llm = synthesis_llm.with_thinking(False)
             builder = VerifiedReportBuilder(
                 verifier=verifier,

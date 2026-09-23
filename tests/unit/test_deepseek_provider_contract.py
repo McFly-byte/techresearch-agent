@@ -41,14 +41,25 @@ async def test_deepseek_routes_thinking_by_model_without_qwen_flag() -> None:
     await provider.with_thinking(False).acomplete([Message(role="user", content="extract")])
     await provider.with_thinking(True).acomplete([Message(role="user", content="plan")])
     await provider.with_json_mode().acomplete([Message(role="user", content="return JSON")])
+    await (
+        provider.with_thinking(False)
+        .with_json_mode()
+        .acomplete([Message(role="user", content="extract JSON")])
+    )
 
     assert [body["model"] for body in bodies] == [
         "deepseek-flash",
         "deepseek-v4-pro",
         "deepseek-v4-pro",
+        "deepseek-flash",
     ]
     assert all("enable_thinking" not in body for body in bodies)
+    assert bodies[0]["thinking"] == {"type": "disabled"}
+    assert bodies[1]["thinking"] == {"type": "enabled"}
     assert bodies[2]["response_format"] == {"type": "json_object"}
+    assert "thinking" not in bodies[2]
+    assert bodies[3]["thinking"] == {"type": "disabled"}
+    assert bodies[3]["response_format"] == {"type": "json_object"}
     await client.aclose()
 
 

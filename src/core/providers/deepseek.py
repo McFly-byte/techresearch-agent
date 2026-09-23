@@ -12,9 +12,9 @@ from core.providers.qwen import QwenProvider
 class DeepSeekProvider(QwenProvider):
     """Provider with explicit chat/reasoner stage routing.
 
-    DeepSeek exposes thinking as a distinct model rather than Qwen's
-    ``enable_thinking`` request field. ``with_thinking`` therefore switches
-    models and never sends that vendor-specific field.
+    DeepSeek uses a vendor-specific ``thinking.type`` object rather than
+    Qwen's ``enable_thinking`` request field. ``with_thinking`` switches the
+    stage model and sends the matching DeepSeek request contract.
     """
 
     provider_name = "deepseek"
@@ -35,6 +35,7 @@ class DeepSeekProvider(QwenProvider):
         chat_model: str = "deepseek-flash",
         reasoner_model: str = "deepseek-v4-pro",
         json_mode: bool = False,
+        thinking_enabled: bool | None = None,
     ) -> None:
         super().__init__(
             model_id=model_id,
@@ -48,11 +49,12 @@ class DeepSeekProvider(QwenProvider):
         self._chat_model = chat_model
         self._reasoner_model = reasoner_model
         self._json_mode = json_mode
+        self._thinking_enabled = thinking_enabled
 
     def with_thinking(self, enabled: bool) -> DeepSeekProvider:
-        return self._clone(
-            model_id=self._reasoner_model if enabled else self._chat_model
-        )
+        clone = self._clone(model_id=self._reasoner_model if enabled else self._chat_model)
+        clone._thinking_enabled = bool(enabled)
+        return clone
 
     def with_json_mode(self, enabled: bool = True) -> DeepSeekProvider:
         clone = self._clone(model_id=self.model_id)
@@ -77,9 +79,12 @@ class DeepSeekProvider(QwenProvider):
             chat_model=self._chat_model,
             reasoner_model=self._reasoner_model,
             json_mode=self._json_mode,
+            thinking_enabled=self._thinking_enabled,
         )
 
     def _augment_payload(self, payload: dict[str, Any]) -> None:
+        if self._thinking_enabled is not None:
+            payload["thinking"] = {"type": "enabled" if self._thinking_enabled else "disabled"}
         if self._json_mode:
             payload["response_format"] = {"type": "json_object"}
 

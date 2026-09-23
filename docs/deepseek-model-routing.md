@@ -13,8 +13,9 @@
 | 非官方 rubric Judge | `deepseek-flash` | 与回答模型区分用途，控制评测成本 |
 | 可选显式深度推理 | `deepseek-v4-pro` | 保留能力，但不进入当前有硬时限的 benchmark 主链 |
 
-`DeepSeekProvider.with_thinking()` 不发送 Qwen 专属的 `enable_thinking` 参数；开启与
-关闭通过上述两个模型 ID 切换。LangSmith usage metadata 会记录实际返回的 provider、
+`DeepSeekProvider.with_thinking()` 不发送无效的 Qwen `enable_thinking` 参数；它同时
+切换模型并发送 DeepSeek 的 `thinking.type=enabled/disabled`。当前主链显式关闭 thinking，
+避免隐藏推理先耗尽输出预算、导致 `content` 为空。LangSmith usage metadata 会记录 provider、
 model 和 Token。抽取、NLI 与 Judge 还会启用 OpenAI 兼容 JSON mode。DeepSeek Judge 只作为新的非官方预评口径，不与历史
 `qwen-nonofficial` 分数直接混合。
 
